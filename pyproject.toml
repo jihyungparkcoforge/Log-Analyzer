@@ -1,0 +1,17 @@
+[project]
+name = "log-analyzer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Sarthak-Coforge-03", email = "sarthak.kakkar@coforge.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+log-analyzer = "log_analyzer:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
