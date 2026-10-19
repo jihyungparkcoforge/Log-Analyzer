@@ -47,6 +47,10 @@ class LogParser:
                 malformed_count += 1
                 reasons[error.reason] += 1
                 if len(samples) < self._max_samples:
-                    samples.append(MalformedLine(line_no, error.reason, line.rstrip("\r\n")))
+                    samples.append(
+                        MalformedLine(line_no, error.reason, line.rstrip("\r\n"))
+                    )
 
-        return ParseResult(tuple(entries), malformed_count, dict(reasons), tuple(samples))
+        return ParseResult(
+            tuple(entries), malformed_count, dict(reasons), tuple(samples)
+        )
