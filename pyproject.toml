@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-log-analyzer = "log_analyzer:main"
+log-analyzer = "log_analyzer.reporting.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
