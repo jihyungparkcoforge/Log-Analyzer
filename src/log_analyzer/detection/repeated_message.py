@@ -7,6 +7,7 @@ from log_analyzer.models import LogEntry
 
 
 class RepeatedMessageDetector(BaseDetector):
+    """Flag exact error-message repetitions within each service and time window."""
     def __init__(
         self,
         window_minutes: int = 5,
@@ -25,6 +26,8 @@ class RepeatedMessageDetector(BaseDetector):
         self.critical_threshold = critical_threshold
 
     def detect(self, data: DetectionInput) -> tuple[Finding, ...]:
+        # Service is part of the key: identical text in unrelated services is separate.
+        # Message comparison is exact; variable IDs are not normalized.
         groups: dict[tuple[datetime, str, str], list[LogEntry]] = defaultdict(list)
         for entry in errors(data, self.window_minutes):
             key = (
@@ -43,6 +46,7 @@ class RepeatedMessageDetector(BaseDetector):
                     detector="repeated_message",
                     description=f"{service}: {message!r} repeated {count} times in the "
                     f"{self.window_minutes}-minute window starting {start.isoformat()}",
+                    # errors() sorted the input, so this is the first occurrence.
                     started_at=entries[0].timestamp,
                     severity="critical"
                     if count >= self.critical_threshold
