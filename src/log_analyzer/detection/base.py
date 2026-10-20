@@ -9,6 +9,7 @@ from log_analyzer.models import LogEntry
 
 
 def validate_count(value: int, name: str) -> None:
+    # Reject bool explicitly: Python otherwise treats True as the integer 1.
     if type(value) is not int or value < 0:
         raise ValueError(f"{name} must be a non-negative integer")
 
@@ -22,6 +23,7 @@ class TrafficWindow:
     failed_requests: int
 
     def __post_init__(self) -> None:
+        # Enforce the request-outcome contract before history reaches a detector.
         validate_count(self.requests, "requests")
         validate_count(self.failed_requests, "failed_requests")
         if self.failed_requests > self.requests:
@@ -41,6 +43,8 @@ class DetectionInput:
     history: tuple[TrafficWindow, ...] = ()
 
     def __post_init__(self) -> None:
+        # Snapshot caller-owned collections so later mutations cannot change input.
+        # object.__setattr__ is needed while initializing this frozen dataclass.
         object.__setattr__(self, "entries", tuple(self.entries))
         object.__setattr__(self, "history", tuple(self.history))
         object.__setattr__(
@@ -50,6 +54,11 @@ class DetectionInput:
 
 @dataclass(frozen=True, slots=True)
 class Finding:
+    """Shared detector output, with optional statistical evidence for summaries.
+
+    count belongs to this finding; overlapping findings must not be summed.
+    started_at is the window start for spikes and the first event for repetitions.
+    """
     detector: str
     description: str
     started_at: datetime
@@ -63,6 +72,10 @@ class Finding:
 
 
 class BaseDetector(ABC):
+    """Require every detector to expose the same input/output interface.
+
+    New subclasses implement detect(); callers can then use them in the same loop.
+    """
     @abstractmethod
     def detect(self, data: DetectionInput) -> tuple[Finding, ...]:
         """Return findings without retaining state between calls."""

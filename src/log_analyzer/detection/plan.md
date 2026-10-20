@@ -1,5 +1,23 @@
 # Spike and Pattern Detection Plan
 
+## Implemented LLM summary demo
+
+`summary.py` builds a JSON context from findings, aggregate error counts, bounded log samples, request counts, and named operational notes (deployments, dependencies, runbooks). `LLMSummarizer` sends this context to the OpenAI Responses API with a caller-selected model. It requires `OPENAI_API_KEY`, does not store responses, and reports failed/incomplete responses explicitly. Context is limited to 64 KB. Supply only data approved for the selected provider; prompt instructions are not a secret-redaction mechanism.
+
+Inspect the synthetic demo without an API call:
+
+```sh
+PYTHONPATH=src uv run --no-project python -m log_analyzer.detection.summary_demo --context-only
+```
+
+After setting `OPENAI_API_KEY`, replace `MODEL_NAME` with an API model available to the account:
+
+```sh
+PYTHONPATH=src uv run --no-project python -m log_analyzer.detection.summary_demo --model MODEL_NAME
+```
+
+The demo's traffic and deployment notes are explicitly synthetic. Tests cover context generation and mocked transport responses, not live model quality. Summary instructions require evidence references, prohibit double-counting overlapping findings, and distinguish suspected causes from observed facts.
+
 ## Goal and scope
 
 Implement detection on top of the existing parser without changing parsing behavior. `LogParser.parse_file()` and `LogParser.parse_lines()` return a `ParseResult`; detectors consume its `entries`, a tuple of successfully parsed `LogEntry` objects. Malformed lines have already been excluded and remain available through the other `ParseResult` fields for diagnostics. Spike detection also needs request-volume data generated alongside the log.
