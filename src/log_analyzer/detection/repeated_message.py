@@ -8,6 +8,7 @@ from log_analyzer.models import LogEntry
 
 class RepeatedMessageDetector(BaseDetector):
     """Flag exact error-message repetitions within each service and time window."""
+
     def __init__(
         self,
         window_minutes: int = 5,

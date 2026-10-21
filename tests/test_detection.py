@@ -1,183 +1,166 @@
-"""Deterministic detector experiments and offline summary-adapter tests.
+"""Log-only detection experiments and offline summary tests.
 
-Run: PYTHONPATH=src uv run --no-project --with pytest pytest tests/test_detection.py -v
-
-All traffic and logs are synthetic. No API key or network request is needed.
-Parameterized tests run once per input case, so pytest reports more cases than
-there are test functions. Summary tests check payloads and response handling,
-not the factual quality of a live model's prose.
+Run: PYTHONPATH=src uv run --no-project --with pytest pytest -v
+All scenarios use parser entries only. No API key, request counts or history
+metadata is required. Mock summary tests check API handling, not model quality.
 """
 
 from datetime import UTC, datetime, timedelta
-from math import comb
 
 import pytest
 
 from log_analyzer.detection import (
     BaseDetector,
     DetectionInput,
-    InsufficientHistoryError,
     RepeatedMessageDetector,
     SpikeDetector,
-    TrafficWindow,
 )
-from log_analyzer.detection.spike import _binomial_tail
 from log_analyzer.detection.summary import LLMSummarizer, build_summary_context
 from log_analyzer.detection.summary_demo import demo_context
 from log_analyzer.models import LogEntry
 from log_analyzer.parsing import LogParser
 
-# A fixed nightly slot makes seasonal comparisons reproducible.
-START = datetime(2026, 10, 19, 23, 0)
+START = datetime(2026, 10, 19, 23)
 
 
 def entries(count, start=START, service="payment", message="timeout", level="ERROR"):
-    """Build events within one minute, keeping every event in the same window."""
-    # Repeated timestamps are valid; line numbers provide deterministic tie breaks.
+    """Create events inside one window; source line numbers break timestamp ties."""
     return tuple(
         LogEntry(start + timedelta(seconds=i % 60), level, service, message, i + 1)
         for i in range(count)
     )
 
 
-def history(start=START, requests=1000, failures=20, days=7):
-    """Create matching clock-time slots on earlier days, with a default 2% rate."""
-    return tuple(
-        TrafficWindow(start - timedelta(days=i), requests, failures)
-        for i in range(1, days + 1)
+def series(counts):
+    """Include INFO markers so zero-error windows are observable in the logs."""
+    return DetectionInput(
+        tuple(
+            e
+            for i, count in enumerate(counts)
+            for e in entries(count, START + timedelta(minutes=5 * i))
+            + entries(1, START + timedelta(minutes=5 * i), level="INFO")
+        )
     )
-
-
-def traffic(count, requests=1000, start=START):
-    """Combine current errors, independent request totals, and seven-day history."""
-    return DetectionInput(entries(count, start), {start: requests}, history(start))
 
 
 @pytest.mark.parametrize("detector", [SpikeDetector(), RepeatedMessageDetector()])
 def test_quiet_parsed_log_and_empty_input(detector):
-    """Neither detector should alert on INFO/WARNING-only logs or empty input."""
-    # Malformed text is excluded by the parser before detection.
+    """Malformed lines are skipped; INFO/WARNING activity creates no findings."""
     parsed = LogParser().parse_lines(
         [
-            "2026-10-19 23:00:00,INFO,payment,completed",
+            "2026-10-19 23:00:00,INFO,payment,ok",
             "2026-10-19 23:01:00,WARNING,payment,slow",
-            "malformed line",
+            "bad line",
         ]
     )
     assert parsed.malformed_count == 1
-    assert detector.detect(DetectionInput(parsed.entries, {START: 0})) == ()
+    assert detector.detect(DetectionInput(parsed.entries)) == ()
     assert detector.detect(DetectionInput(())) == ()
 
 
 def test_inheritance_allows_common_calling_interface():
-    """The abstract base cannot be instantiated; subclasses share detect(data)."""
+    """Each concrete detector implements the same abstract interface."""
     with pytest.raises(TypeError):
         BaseDetector()
-    detectors = [SpikeDetector(), RepeatedMessageDetector()]
-    assert all(isinstance(d, BaseDetector) for d in detectors)
-    assert all(d.detect(DetectionInput(())) == () for d in detectors)
-
-
-@pytest.mark.parametrize("requests, failures", [(1000, 20), (5000, 100)])
-def test_more_nightly_usage_at_same_failure_rate_is_not_a_spike(requests, failures):
-    """Five times the traffic is normal when failures remain at the baseline 2%."""
-    assert SpikeDetector().detect(traffic(failures, requests)) == ()
-
-
-def test_nightly_failure_rate_increase_is_critical():
-    """A rise from the usual 2% to 6% should produce an evidence-rich finding."""
-    (finding,) = SpikeDetector().detect(traffic(300, 5000))
-    assert finding.detector == "spike"
-    assert finding.started_at == START
-    assert finding.count == 300
-    assert finding.request_count == 5000
-    # Seven days yield 140 failures / 7000 requests; smoothing adds 1 and 2.
-    assert finding.expected_errors == pytest.approx(5000 * 141 / 7002)
-    assert finding.severity == "critical"
-    assert finding.tail_probability < SpikeDetector().critical_cutoff
-    assert "300 failures / 5000 requests" in finding.description
-
-
-def test_same_error_count_has_different_meaning_at_different_usage():
-    """100 failures are abnormal at 10%, but normal at the historical 2% rate."""
-    assert SpikeDetector().detect(traffic(100, 1000))
-    assert SpikeDetector().detect(traffic(100, 5000)) == ()
-
-
-def test_seasonal_baseline_uses_matching_slot_not_daytime():
-    """The low daytime rate must not replace the normal nighttime baseline."""
-    daytime = START.replace(hour=12)
-    data = DetectionInput(
-        entries(100), {START: 5000}, history() + history(daytime, failures=1)
-    )
-    assert SpikeDetector().detect(data) == ()
-
-
-def test_future_history_is_not_used_and_calls_are_independent():
-    """Future observations cannot leak into the baseline or change current findings."""
-    detector = SpikeDetector()
-    initial = traffic(100)
-    # An extreme future value would distort the baseline if accidentally included.
-    future = TrafficWindow(START + timedelta(days=1), 1000, 900)
-    assert detector.detect(initial) == detector.detect(
-        DetectionInput(
-            initial.entries, initial.request_counts, initial.history + (future,)
-        )
-    )
-    # Reusing one detector after an incident must not retain old findings.
-    assert detector.detect(traffic(20)) == ()
-    assert detector.detect(initial) == detector.detect(initial)
-
-
-def test_missing_traffic_and_history_are_explicit_errors():
-    """Reject inputs that cannot support the request-based statistical model."""
-    with pytest.raises(ValueError, match="missing request count"):
-        SpikeDetector().detect(DetectionInput(entries(1)))
-    with pytest.raises(InsufficientHistoryError, match="found 6"):
-        SpikeDetector().detect(
-            DetectionInput(entries(1), {START: 100}, history(days=6))
-        )
-    # Failed requests are a subset of all requests under this detector's contract.
-    with pytest.raises(ValueError, match="exceed"):
-        SpikeDetector().detect(traffic(2, requests=1))
-    with pytest.raises(ValueError, match="duplicate"):
-        SpikeDetector().detect(DetectionInput(entries(1), {START: 100}, history() * 2))
+    for detector in (SpikeDetector(), RepeatedMessageDetector()):
+        assert isinstance(detector, BaseDetector)
+        assert detector.detect(DetectionInput(())) == ()
 
 
 @pytest.mark.parametrize(
-    "n,p,e",
-    [
-        (10, 0.2, 0),
-        (10, 0.2, 2),
-        (10, 0.2, 5),
-        (10, 0.9, 8),
-        (10, 0.9, 10),
-        (100, 0.02, 12),
-    ],
+    "count,severity", [(9, None), (10, "warning"), (19, "warning"), (20, "critical")]
 )
-def test_binomial_tail_against_direct_probability_sum(n, p, e):
-    """Compare the optimized recurrence with an independent textbook calculation."""
-    # Small n makes the direct binomial sum practical. Cases cover both sides of
-    # the mean and the endpoints; approx allows normal floating-point rounding.
-    expected = sum(comb(n, k) * p**k * (1 - p) ** (n - k) for k in range(e, n + 1))
-    assert _binomial_tail(n, p, e) == pytest.approx(expected, rel=1e-11)
+def test_bootstrap_threshold_without_history(count, severity):
+    """The first window is assessable using the minimum-count fallback."""
+    result = SpikeDetector().detect(series([count]))
+    if severity is None:
+        assert result == ()
+    else:
+        assert result[0].severity == severity
+        assert result[0].threshold == 10
+        assert result[0].baseline_windows == 0
 
 
-def test_spike_warning_and_critical_decision_levels():
-    """Check the first alerting count and the transition to critical severity."""
+def test_baseline_adapts_to_gradual_changes():
+    """Gradually higher normal counts raise the threshold without metadata."""
+    result = SpikeDetector().detect(series([5, 7, 9, 11, 13, 15, 17, 19, 50]))
+    assert len(result) == 1
+    assert result[0].count == 50
+    assert result[0].expected_errors == 12
+    # median=12, MAD=4; ceil(12 + 3*1.4826*4) = 30.
+    assert result[0].threshold == 30
+    assert result[0].severity == "warning"
+
+
+def test_sustained_spike_does_not_contaminate_baseline():
+    """Alerting windows are excluded instead of becoming the new normal."""
+    findings = SpikeDetector().detect(series([2] * 12 + [36, 49, 52]))
+    assert [f.count for f in findings] == [36, 49, 52]
+    assert all(f.threshold == 10 and f.severity == "critical" for f in findings)
+
+
+def test_future_windows_and_repeated_calls_do_not_change_past_findings():
+    """Only earlier windows affect decisions; no state survives detect()."""
     detector = SpikeDetector()
-    p = 141 / 7002
+    initial = detector.detect(series([2, 30]))
+    assert detector.detect(series([2, 30, 100]))[:1] == initial
+    assert detector.detect(series([1, 2])) == ()
+    assert detector.detect(series([2, 30])) == initial
 
-    # Independent exact PMF sums establish the count where each decision changes.
-    def tail(e):
-        return sum(comb(100, k) * p**k * (1 - p) ** (100 - k) for k in range(e, 101))
 
-    warning = next(e for e in range(101) if tail(e) <= detector.warning_cutoff)
-    critical = next(e for e in range(101) if tail(e) <= detector.critical_cutoff)
-    assert warning < critical
-    assert detector.detect(traffic(warning - 1, 100)) == ()
-    assert detector.detect(traffic(warning, 100))[0].severity == "warning"
-    assert detector.detect(traffic(critical, 100))[0].severity == "critical"
+def test_empty_time_slots_are_zero_counts_without_unbounded_work():
+    """A very long gap fills only the bounded baseline, not millions of slots."""
+    later = START + timedelta(days=3650)
+    (finding,) = SpikeDetector().detect(DetectionInput(entries(1) + entries(20, later)))
+    assert finding.expected_errors == 0
+    assert finding.baseline_windows == 12
+
+
+def test_boundary_unsorted_input_and_deterministic_output():
+    """An event exactly five minutes later belongs to the next window."""
+    later = START + timedelta(minutes=5)
+    data = DetectionInput(tuple(reversed(entries(10) + entries(10, later))))
+    for detector in (SpikeDetector(), RepeatedMessageDetector()):
+        result = detector.detect(data)
+        assert [f.started_at for f in result] == [START, later]
+        assert [f.count for f in result] == [10, 10]
+        assert detector.detect(data) == result
+
+
+def test_parser_to_detectors_without_external_metadata():
+    """One parsed file is sufficient for both detectors, including an initial spike."""
+    parsed = LogParser().parse_lines(
+        [f"2026-10-19 23:00:{i:02},ERROR,payment,timeout" for i in range(50)]
+        + ["missing timestamp"]
+    )
+    assert parsed.malformed_count == 1
+    for detector in (SpikeDetector(), RepeatedMessageDetector()):
+        (finding,) = detector.detect(DetectionInput(parsed.entries))
+        assert finding.count == 50 and finding.severity == "critical"
+
+
+@pytest.mark.parametrize("minutes", [0, -1, 7, 1.5, True])
+def test_invalid_window_sizes(minutes):
+    """Window durations must be positive integer divisors of one day."""
+    for cls in (SpikeDetector, RepeatedMessageDetector):
+        with pytest.raises(ValueError):
+            cls(window_minutes=minutes)
+
+
+def test_invalid_configuration_and_timestamp_conventions():
+    """Configuration errors remain explicit; timestamps follow the parser contract."""
+    for kwargs in (
+        {"baseline_windows": 0},
+        {"min_errors": 0},
+        {"sensitivity": float("nan")},
+    ):
+        with pytest.raises(ValueError):
+            SpikeDetector(**kwargs)
+    with pytest.raises(ValueError):
+        RepeatedMessageDetector(warning_threshold=10, critical_threshold=5)
+    for detector in (SpikeDetector(), RepeatedMessageDetector()):
+        with pytest.raises(ValueError, match="naive"):
+            detector.detect(DetectionInput(entries(1, START.replace(tzinfo=UTC))))
 
 
 @pytest.mark.parametrize(
@@ -208,72 +191,6 @@ def test_repeated_messages_are_separated_by_service_text_and_level():
     assert RepeatedMessageDetector().detect(data) == ()
 
 
-def test_boundary_unsorted_input_and_deterministic_output():
-    """Events at exactly +5 minutes belong to the next window, even when reversed."""
-    later = START + timedelta(minutes=5)
-    data = DetectionInput(
-        tuple(reversed(entries(10) + entries(10, later))),
-        {START: 10, later: 10},
-        history() + history(later),
-    )
-    for detector in (SpikeDetector(), RepeatedMessageDetector()):
-        result = detector.detect(data)
-        assert [f.started_at for f in result] == [START, later]
-        assert [f.count for f in result] == [10, 10]
-        assert detector.detect(data) == result
-
-
-def test_parser_to_detectors_with_synthetic_traffic():
-    """Exercise the real parser-to-detector path with one malformed source line."""
-    # 50/1000 failures exceed the usual 2%; the identical text also exceeds
-    # the repeated-message threshold. Both findings refer to the same 50 events.
-    lines = [
-        f"2026-10-19 23:00:{i:02},ERROR,payment,Connection timeout to db-primary"
-        for i in range(50)
-    ] + ["invalid log"]
-    parsed = LogParser().parse_lines(lines)
-    data = DetectionInput(parsed.entries, {START: 1000}, history())
-    assert parsed.malformed_count == 1
-    for detector in (SpikeDetector(), RepeatedMessageDetector()):
-        (finding,) = detector.detect(data)
-        assert finding.count == 50
-        assert finding.severity == "critical"
-
-
-@pytest.mark.parametrize("minutes", [0, -1, 7, 1.5, True])
-def test_invalid_window_sizes(minutes):
-    """Reject non-integers and durations that cannot divide a day into equal slots."""
-    # 7 is positive but does not divide 1440; bool must not be accepted as int.
-    for cls in (SpikeDetector, RepeatedMessageDetector):
-        with pytest.raises(ValueError):
-            cls(window_minutes=minutes)
-
-
-def test_other_invalid_configuration_and_input():
-    """Check invalid thresholds, impossible counts, and incompatible timestamps."""
-    with pytest.raises(ValueError):
-        SpikeDetector(history_days=0)
-    with pytest.raises(ValueError):
-        SpikeDetector(warning_daily_budget=float("nan"))
-    with pytest.raises(ValueError):
-        RepeatedMessageDetector(warning_threshold=10, critical_threshold=5)
-    with pytest.raises(ValueError):
-        TrafficWindow(START, 10, 11)
-    with pytest.raises(ValueError):
-        SpikeDetector().detect(DetectionInput((), {START: -1}))
-    with pytest.raises(ValueError, match="aligned"):
-        SpikeDetector().detect(DetectionInput((), {START + timedelta(seconds=1): 1}))
-    with pytest.raises(ValueError, match="naive"):
-        RepeatedMessageDetector().detect(
-            DetectionInput(entries(1, START.replace(tzinfo=UTC)))
-        )
-
-
-def test_window_size_adjusts_daily_decision_levels():
-    """Ten-minute windows mean 144 daily comparisons instead of 288."""
-    assert SpikeDetector(window_minutes=10).warning_cutoff == pytest.approx(0.05 / 144)
-
-
 def test_summary_context_contains_real_findings_and_labeled_synthetic_notes():
     """Build context through real detector code while keeping synthetic origins clear."""
     # Aggregate error count stays 300 although two findings reference those errors.
@@ -281,9 +198,9 @@ def test_summary_context_contains_real_findings_and_labeled_synthetic_notes():
     context = demo_context()
     assert len(context["findings"]) == 2
     assert context["scope"]["error_log_count"] == 300
-    assert context["findings"][0]["request_count"] == 5000
+    assert context["findings"][0]["threshold"] == 10
     assert context["omitted"]["error_samples"] == 288
-    assert context["history_window_count"] == 7
+    assert "request_windows" not in context
     assert "Synthetic" in context["operational_notes"]["deployment"]
 
 

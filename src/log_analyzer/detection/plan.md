@@ -1,84 +1,50 @@
-# Spike and Pattern Detection Plan
+# Detection implementation and data contract
 
-## Implemented LLM summary demo
+## Input and scope
 
-`summary.py` builds a JSON context from findings, aggregate error counts, bounded log samples, request counts, and named operational notes (deployments, dependencies, runbooks). `LLMSummarizer` sends this context to the OpenAI Responses API with a caller-selected model. It requires `OPENAI_API_KEY`, does not store responses, and reports failed/incomplete responses explicitly. Context is limited to 64 KB. Supply only data approved for the selected provider; prompt instructions are not a secret-redaction mechanism.
+Both detectors accept `DetectionInput(entries)`, containing only the parser's `LogEntry` objects. No request counts, traffic metadata, or external historical dataset is needed. The parser excludes malformed lines, including missing/invalid timestamps; the CLI reports their count. Detectors use the parser's naive timestamps and sort errors before analysis. An ERROR event is not necessarily a failed request.
 
-Inspect the synthetic demo without an API call:
+## Shared interface
 
-```sh
-PYTHONPATH=src uv run --no-project python -m log_analyzer.detection.summary_demo --context-only
-```
+`BaseDetector.detect(data)` returns a tuple of `Finding` objects. Each finding has a description, started_at, severity, and count. Spike findings additionally contain the baseline median in `expected_errors`, threshold, and baseline_windows. The median is descriptive context, not a calibrated probabilistic expectation. Repeated-message findings contain service and message. Overlapping finding counts must not be added.
 
-After setting `OPENAI_API_KEY`, replace `MODEL_NAME` with an API model available to the account:
+## Spike rule
 
-```sh
-PYTHONPATH=src uv run --no-project python -m log_analyzer.detection.summary_demo --model MODEL_NAME
-```
+- Use five-minute half-open windows, aligned to midnight. Configurable window_minutes must divide 1440.
+- Count ERROR entries in each window, across services. INFO/WARNING entries also establish the observed timeline.
+- Maintain at most 12 prior non-alert window counts. Empty slots between observed windows contribute zero. No future data is used, and all state is reset per call.
+- Let m be the baseline median and MAD the median absolute deviation. Set threshold = max(10, ceil(m + 3 * 1.4826 * max(MAD, 1))). min_errors, sensitivity, and baseline_windows are configurable.
+- With no baseline, m and MAD are zero; the default threshold is 10. No warm-up exception prevents initial windows from being analyzed.
+- A count at or above threshold produces warning; at or above twice threshold produces critical. Exclude alerting windows from the baseline to avoid absorbing a sustained incident.
+- started_at is the window start. Include the observed count, threshold, median, and baseline size in the description.
+- These are explainable tuning parameters, not guaranteed false-positive probabilities. Raising min_errors or sensitivity reduces sensitivity; lowering them can increase alerts.
 
-The demo's traffic and deployment notes are explicitly synthetic. Tests cover context generation and mocked transport responses, not live model quality. Summary instructions require evidence references, prohibit double-counting overlapping findings, and distinguish suspected causes from observed facts.
+## Repeated-message rule
 
-## Goal and scope
+Group ERROR entries by (window, service, exact message). Five occurrences give warning, ten give critical by default. started_at is the first occurrence. Case and variable IDs remain significant.
 
-Implement detection on top of the existing parser without changing parsing behavior. `LogParser.parse_file()` and `LogParser.parse_lines()` return a `ParseResult`; detectors consume its `entries`, a tuple of successfully parsed `LogEntry` objects. Malformed lines have already been excluded and remain available through the other `ParseResult` fields for diagnostics. Spike detection also needs request-volume data generated alongside the log.
+## Limits
 
-Keep implementation in `src/log_analyzer/detection/` and tests in `tests/test_detection.py`.
+The first and last windows may be partial, and no missing events are inferred. Gaps count as zero observed errors but may reflect missing telemetry. The recent baseline does not establish daily seasonality: a predictable nightly burst may still alert. Multi-day seasonal comparison could later use timestamps from the same supplied log, but is not implemented. Both detectors currently retain parsed entries in memory.
 
-## Input contract
+## Integration and tests
 
-- Each `LogEntry` provides `timestamp`, `level`, `service`, `message`, and `line_no`.
-- Only entries with `level == "ERROR"` count toward either detector.
-- Entries arrive in source order, which the parser does not guarantee is timestamp order. Sort by `(timestamp, line_no)` within detection before assigning entries to time windows.
-- Timestamps are naive `datetime` values. Treat them as belonging to one consistent local timeline; do not infer a time zone.
-- Compare repeated messages by their parsed `message` string exactly, including case. The parser has already stripped surrounding whitespace. Do not normalize IDs or other variable text in this first version.
-- A log line is not necessarily one request. Do not use the number of parsed entries as the request count. The data generator must provide the number of completed requests for each current five-minute window, plus aggregate `(requests, failed_requests)` pairs for the same clock-time window on at least seven previous days. In generated data, each request has exactly one success/failure outcome, so `failed_requests <= requests`; the current window's failed-request count must match the corresponding `ERROR` request events in the log.
+The CLI parses a file, runs both detectors directly, and formats their findings. There is no skipped spike path for missing request metadata. The committed sample produces spike counts of 36, 49, and 52 at 15:30, 15:35, and 15:40, with threshold 10 and critical severity. tests/test_cli.py checks actual spike findings and their rendered output against the planted interval.
 
-## Public types
+Tests in tests/test_detection.py cover quiet/empty inputs, initial windows, severity boundaries, changing baselines, sustained spikes, zero-error gaps, future-data isolation, malformed lines, window boundaries, repeated messages, and summary request/response handling. Reporting tests cover sorting and formatting.
 
-1. Define a frozen `Finding` dataclass with `detector`, `description`, `started_at`, `severity`, `count`, and optional `service` and `message` fields. `started_at` is a `datetime`; severity is one of `"warning"` or `"critical"`.
-2. Define a `DetectionInput` containing the parsed entries, current request counts keyed by window start, and dated `TrafficWindow(started_at, requests, failed_requests)` records. The historical aggregates are input data, not inferred from the three-hour sample file.
-3. Define an abstract `BaseDetector` with `detect(data: DetectionInput) -> tuple[Finding, ...]`. It should hold no per-call results on the instance so repeated calls are independent. The repeated-message detector uses only `data.entries`.
-4. Export `DetectionInput`, `Finding`, `BaseDetector`, `SpikeDetector`, and `RepeatedMessageDetector` from `detection/__init__.py`.
+Run: `PYTHONPATH=src uv run --no-project --with pytest pytest -v`.
 
-## Shared window rule
+## LLM summary
 
-Use fixed, non-overlapping, half-open windows of configurable duration (default: five minutes). Align boundaries to clock time, so a five-minute window is, for example, `[15:30:00, 15:35:00)`. An event exactly at 15:35:00 belongs to the next window. Require a positive whole-minute window size that divides 1440, so daily slots align consistently. Each detector emits at most one finding per matching window and grouping key. Return findings ordered by `started_at`, then service and message for deterministic tests.
+summary.py combines actual findings, bounded error samples, aggregate log counts, and caller-supplied operational notes. Notes can contain deployment context, dependencies, and runbooks; no retrieval is performed automatically. The model must not infer request counts or failure rates from log counts. Context is limited to 64 KB and omission counts are explicit.
 
-## SpikeDetector
+The synthetic summary demo includes one hour of INFO activity followed by 300 ERROR events. It uses the real parser and detectors without metadata. The deployment note is explicitly synthetic.
 
-- Count failed requests represented by `ERROR` entries in each current window, across services. Obtain the number of completed requests `N` for that window from `DetectionInput`; never substitute a count of all log lines.
-- For the same five-minute clock-time slot on previous days, sum historical failed requests `H_E` and completed requests `H_N`. Estimate the expected failure probability as `p = (H_E + 1) / (H_N + 2)`. The `+1` and `+2` prevent an estimated probability of exactly zero or one when the history is small. Use the latest seven earlier dates with positive traffic in the matching slot; never use the current or future date. Raise `InsufficientHistoryError` when an error-containing window lacks this history. Windows without errors cannot be spikes and need no baseline. Missing request counts for error-containing windows, duplicate history windows, unaligned timestamps, and impossible counts raise `ValueError`.
-- Model the current failed-request count as `X ~ Binomial(N, p)`. For observed count `E`, calculate the upper-tail probability `q = P(X >= E)`. If `N == 0`, emit no finding. The generator contract ensures `0 <= E <= N`.
-- There are 288 five-minute windows per day. Use a daily false-alert budget of 0.05, giving a per-window warning cutoff `q <= 0.05 / 288`; use `q <= 0.005 / 288` for `critical`. These are configurable statistical decision levels rather than fixed error-count thresholds. Set `started_at` to the window start, and include `N`, `E`, expected errors `N * p`, and `q` in the description.
-- Nightly activity is represented in the historical values for that same clock-time slot. A higher nighttime request volume with the usual failure rate should not alert; an unusual increase in the failure rate should. These daily budgets are nominal decision levels, not guaranteed false-alarm probabilities: the failure probability is estimated and real observations can be dependent.
+Inspect context without an API call:
+`PYTHONPATH=src uv run --no-project python -m log_analyzer.detection.summary_demo --context-only`
 
-## RepeatedMessageDetector
+Run the English summary using OPENAI_API_KEY and OPENAI_MODEL from .env:
+`PYTHONPATH=src uv run --no-project --env-file .env python -m log_analyzer.detection.summary_demo`
 
-- Within each window, group `ERROR` entries by `(service, message)`. This keeps identical text from unrelated services separate.
-- Emit a finding when a group reaches a configurable warning threshold (default: 5). Set `started_at` to the timestamp of that group's first entry in the window; include its service, message, window, and count in the description.
-- Use a configurable critical threshold (default: 10): counts at or above it are `critical`, and other qualifying counts are `warning`. Validate `1 <= warning_threshold < critical_threshold`.
-
-## Implementation sequence
-
-1. Add the shared finding type and abstract detector contract.
-2. Add a small private helper for sorting errors and computing their aligned window start; reuse it in both detectors.
-3. Implement the spike detector's historical rate calculation and binomial upper-tail test, plus the repeated-message detector's counters. Keep detection logic independent of file I/O and `ParseResult` construction.
-4. Export the public types and run pytest.
-
-## Tests
-
-Place pytest tests in `tests/test_detection.py`, as requested. Cover:
-
-- A quiet log containing no errors returns no findings from either detector.
-- Counts just below, at, and above the repeated-message warning and critical thresholds.
-- Spike windows with the same failure rate but different request volumes, an increased failure rate, zero requests, missing history, and invalid request/failure counts.
-- A synthetic nightly workload that is busier than daytime but matches its own historical failure rate, followed by a nightly window with an elevated failure rate.
-- Events exactly on a window boundary, multiple windows, and unsorted input.
-- Repeated text across different services, different messages in one service, and non-`ERROR` entries with matching text.
-- Finding start times, descriptions, counts, severity, and deterministic ordering.
-- Empty input, invalid configuration, and repeated calls to the same detector instance.
-- Once the generator supplies aligned request counts and at least seven days of historical window aggregates, an integration test that parses `data/sample.log` and confirms the planted spike is detected. Keep unit tests based on small, explicit `LogEntry` and traffic fixtures.
-
-The current three-hour sample has 36, 49, and 52 errors in the three five-minute windows beginning at 15:30, 15:35, and 15:40, but it does not include request counts or preceding days. Do not claim that the usage-aware rule was run on this sample until the generator provides that data.
-
-Run `PYTHONPATH=src uv run --no-project --with pytest pytest tests/test_detection.py -v`. The tests generate explicit synthetic traffic histories and parser input in memory, including normal nightly load and abnormal failure rates. No request metrics are invented for the existing sample file.
+Default model: gpt-6-luna. API tests use mock responses, not paid calls or quality evaluation. Do not submit sensitive data without appropriate authorization; the prompt is not a redaction mechanism.

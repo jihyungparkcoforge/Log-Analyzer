@@ -36,7 +36,9 @@ uv run log-analyzer data/sample.log
 Findings from two detectors in `src/log_analyzer/detection/`:
 
 - **Repeated error message**: the same `ERROR` message from the same service at least 5 times in a 5-minute window (`warning`), or at least 10 times (`critical`).
-- **Error spike**: an unusual failure rate compared with the same time slot on the previous 7 days. It needs per-window request counts and that history, which a log file alone does not contain, so the CLI currently skips it and says so in the report's notes.
+- **Error spike**: count `ERROR` events in five-minute windows using only the parsed log. The threshold is `max(10, ceil(median + 3 * 1.4826 * max(MAD, 1)))`, based on the latest 12 non-alert windows. MAD is the median absolute deviation of those counts. At or above the threshold gives `warning`; twice the threshold gives `critical`. With no earlier windows the median is zero, so the default threshold is 10. Zero-error windows within the observed log span count toward the baseline. Alerting windows do not raise the baseline.
+
+Both detectors consume `DetectionInput(result.entries)`. No request counts or external history are needed. These counts describe log events, not failed requests. The first/last windows may be partial; the detector counts what is present without extrapolating missing events. An empty time slot is interpreted as zero observed errors, not proof that the service was healthy. The recent-window baseline does not learn daily seasonality; a recurring nightly burst can still alert.
 
 Each finding shows its severity, type, start time, count, service, message and the detector's description. Findings are sorted `critical` before `warning`; equal severities are ordered by start time, then detector, service and message, so the output is deterministic. With no findings the report says `No findings detected.`
 
@@ -47,21 +49,82 @@ Excerpt of the actual output for `data/sample.log`:
 LOG ANALYSIS REPORT
 ============================================================
 Log file: data/sample.log
-Findings: 8
+Findings: 11
 
-1. [CRITICAL] Repeated error message
+1. [CRITICAL] Error spike
+   Started: 2026-10-19 15:30:00
+   Count:   36 errors
+   Details: 36 ERROR events in the 5-minute window starting 2026-10-19T15:30:00; threshold 10, baseline median 2.5 from 12 prior non-alert windows.
+
+2. [CRITICAL] Repeated error message
    Started: 2026-10-19 15:30:16
    Count:   14 occurrences
    Service: payment-service
    Message: Connection timeout to db-primary
    Details: payment-service: 'Connection timeout to db-primary' repeated 14 times in the 5-minute window starting 2026-10-19T15:30:00
 
-...
+3. [CRITICAL] Error spike
+   Started: 2026-10-19 15:35:00
+   Count:   49 errors
+   Details: 49 ERROR events in the 5-minute window starting 2026-10-19T15:35:00; threshold 10, baseline median 2.5 from 12 prior non-alert windows.
+
+4. [CRITICAL] Repeated error message
+   Started: 2026-10-19 15:35:02
+   Count:   19 occurrences
+   Service: payment-service
+   Message: Connection timeout to db-primary
+   Details: payment-service: 'Connection timeout to db-primary' repeated 19 times in the 5-minute window starting 2026-10-19T15:35:00
+
+5. [CRITICAL] Error spike
+   Started: 2026-10-19 15:40:00
+   Count:   52 errors
+   Details: 52 ERROR events in the 5-minute window starting 2026-10-19T15:40:00; threshold 10, baseline median 2.5 from 12 prior non-alert windows.
+
+6. [CRITICAL] Repeated error message
+   Started: 2026-10-19 15:40:07
+   Count:   22 occurrences
+   Service: payment-service
+   Message: Connection timeout to db-primary
+   Details: payment-service: 'Connection timeout to db-primary' repeated 22 times in the 5-minute window starting 2026-10-19T15:40:00
+
+7. [WARNING] Repeated error message
+   Started: 2026-10-19 15:30:05
+   Count:   6 occurrences
+   Service: payment-service
+   Message: Connection pool exhausted
+   Details: payment-service: 'Connection pool exhausted' repeated 6 times in the 5-minute window starting 2026-10-19T15:30:00
+
+8. [WARNING] Repeated error message
+   Started: 2026-10-19 15:30:48
+   Count:   7 occurrences
+   Service: api-gateway
+   Message: Upstream payment-service returned 502
+   Details: api-gateway: 'Upstream payment-service returned 502' repeated 7 times in the 5-minute window starting 2026-10-19T15:30:00
+
+9. [WARNING] Repeated error message
+   Started: 2026-10-19 15:35:31
+   Count:   7 occurrences
+   Service: api-gateway
+   Message: Upstream payment-service returned 502
+   Details: api-gateway: 'Upstream payment-service returned 502' repeated 7 times in the 5-minute window starting 2026-10-19T15:35:00
+
+10. [WARNING] Repeated error message
+   Started: 2026-10-19 15:35:35
+   Count:   9 occurrences
+   Service: payment-service
+   Message: Connection pool exhausted
+   Details: payment-service: 'Connection pool exhausted' repeated 9 times in the 5-minute window starting 2026-10-19T15:35:00
+
+11. [WARNING] Repeated error message
+   Started: 2026-10-19 15:40:52
+   Count:   8 occurrences
+   Service: api-gateway
+   Message: Upstream payment-service returned 502
+   Details: api-gateway: 'Upstream payment-service returned 502' repeated 8 times in the 5-minute window starting 2026-10-19T15:40:00
 
 Notes:
   - 3558 entries parsed
   - 73 malformed lines skipped (bad_timestamp: 19, blank_line: 12, missing_fields: 35, unknown_level: 7)
-  - Spike detection skipped (needs per-window request counts and prior-day history, which a log file alone does not provide): missing request count for 2026-10-19T14:00:00
 
 ============================================================
 ```

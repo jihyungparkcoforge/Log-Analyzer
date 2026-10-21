@@ -27,8 +27,6 @@ def sort_findings(findings: Iterable[Finding]) -> list[Finding]:
 def _count_text(finding: Finding) -> str:
     if finding.detector == "spike":
         text = f"{finding.count} errors"
-        if finding.request_count is not None:
-            text += f" / {finding.request_count} requests"
         return text
     if finding.detector == "repeated_message":
         return f"{finding.count} occurrences"
