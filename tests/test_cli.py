@@ -1,12 +1,11 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from log_analyzer.detection import (
     DetectionInput,
     RepeatedMessageDetector,
     SpikeDetector,
-    TrafficWindow,
 )
 from log_analyzer.parsing import LogParser
 from log_analyzer.reporting import format_report
@@ -63,7 +62,11 @@ def test_planted_spike_appears_in_sample_report(capsys):
     spike_end = datetime.fromisoformat(spike["end"])
 
     entries = LogParser().parse_file(SAMPLE).entries
-    findings = RepeatedMessageDetector().detect(DetectionInput(entries))
+    data = DetectionInput(entries)
+    findings = RepeatedMessageDetector().detect(data) + SpikeDetector().detect(data)
+    spikes = [f for f in findings if f.detector == "spike"]
+    assert [f.count for f in spikes] == [36, 49, 52]
+    assert all(spike_start <= f.started_at < spike_end for f in spikes)
     planted = [
         f
         for f in findings
@@ -81,24 +84,25 @@ def test_planted_spike_appears_in_sample_report(capsys):
         assert f"Started: {finding.started_at:%Y-%m-%d %H:%M:%S}" in out
         assert f"Count:   {finding.count} occurrences" in out
     assert out.index("[CRITICAL]") < out.index("[WARNING]")
-    # The sample has no request-count/history data yet, so the spike detector
-    # cannot run on it; the report must say so rather than crash.
-    assert "Spike detection skipped" in out
+    assert "[CRITICAL] Error spike" in out
+    assert "Spike detection skipped" not in out
+    for finding in spikes:
+        assert f"Count:   {finding.count} errors" in out
 
 
 def test_real_spike_finding_renders_with_counts():
-    start = datetime(2026, 10, 19, 15, 30)
-    entries = LogParser().parse_lines(
-        f"2026-10-19 15:30:{i:02},ERROR,payment-service,Connection timeout"
-        for i in range(50)
-    ).entries
-    history = tuple(
-        TrafficWindow(start - timedelta(days=d), 1000, 20) for d in range(1, 8)
+    entries = (
+        LogParser()
+        .parse_lines(
+            f"2026-10-19 15:30:{i:02},ERROR,payment-service,Connection timeout"
+            for i in range(50)
+        )
+        .entries
     )
-    data = DetectionInput(entries, {start: 1000}, history)
+    data = DetectionInput(entries)
     findings = SpikeDetector().detect(data) + RepeatedMessageDetector().detect(data)
     report = format_report(findings)
     assert "[CRITICAL] Error spike" in report
     assert "Started: 2026-10-19 15:30:00" in report
-    assert "Count:   50 errors / 1000 requests" in report
+    assert "Count:   50 errors" in report
     assert "Count:   50 occurrences" in report

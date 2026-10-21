@@ -10,11 +10,10 @@ T1 = datetime(2026, 10, 19, 15, 35, 2)
 def spike(severity="critical", started_at=T0, count=36):
     return Finding(
         detector="spike",
-        description=f"{count} failures / 400 requests",
+        description=f"{count} ERROR events",
         started_at=started_at,
         severity=severity,
         count=count,
-        request_count=400,
     )
 
 
@@ -55,10 +54,10 @@ def test_both_detector_types_with_details():
     assert "2. [WARNING] Repeated error message" in report
     assert "Started: 2026-10-19 15:30:00" in report
     assert "Started: 2026-10-19 15:35:02" in report
-    assert "Count:   36 errors / 400 requests" in report
+    assert "Count:   36 errors" in report
     assert "Count:   7 occurrences" in report
     assert "Service: api-gateway" in report
-    assert "Details: 36 failures / 400 requests" in report
+    assert "Details: 36 ERROR events" in report
     assert "Details: api-gateway: 'Upstream returned 502' repeated 7 times" in report
 
 

@@ -9,7 +9,6 @@ from log_analyzer.detection import (
     DetectionInput,
     RepeatedMessageDetector,
     SpikeDetector,
-    TrafficWindow,
 )
 from log_analyzer.detection.summary import LLMSummarizer, build_summary_context
 from log_analyzer.parsing import LogParser
@@ -23,14 +22,13 @@ def demo_context() -> dict:
         "payment-service,Connection timeout to db-primary"
         for i in range(300)
     ]
-    # Current failures: 300 / 5000 = 6%.
-    # Each historical matching slot: 20 / 1000 = 2%, over seven earlier days.
-    # Successes are represented in traffic counts, not additional log lines.
-    data = DetectionInput(
-        LogParser().parse_lines(lines).entries,
-        {start: 5000},
-        tuple(TrafficWindow(start - timedelta(days=i), 1000, 20) for i in range(1, 8)),
-    )
+    # Add one hour of quiet activity using logs alone; no traffic metadata exists.
+    lines += [
+        f"{start - timedelta(minutes=5 * i):%Y-%m-%d %H:%M:%S},INFO,"
+        "payment-service,Background activity"
+        for i in range(1, 13)
+    ]
+    data = DetectionInput(LogParser().parse_lines(lines).entries)
     # Both detectors flag the same 300 events for different reasons.
     # Concatenate findings, but never interpret their counts as 600 failures.
     findings = SpikeDetector().detect(data) + RepeatedMessageDetector().detect(data)
@@ -38,8 +36,8 @@ def demo_context() -> dict:
         data,
         findings,
         notes={
-            "dataset": "Synthetic demonstration: one ERROR event per failed request; "
-            "successful requests are represented by traffic counts, not log lines.",
+            "dataset": "Synthetic log-only demonstration: 300 ERROR events after one hour "
+            "of INFO activity. Request counts and failure rates are unknown.",
             "deployment": "Synthetic event: payment-service v1.4 deployed at 22:55. "
             "No evidence yet that this deployment caused the errors.",
             "dependencies": "payment-service depends on db-primary.",

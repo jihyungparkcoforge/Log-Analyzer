@@ -24,13 +24,7 @@ def analyze(path: str | Path) -> str:
             for reason, count in sorted(result.malformed_reasons.items())
         )
         notes.append(f"{result.malformed_count} malformed lines skipped ({reasons})")
-    try:
-        findings += SpikeDetector().detect(data)
-    except ValueError as error:
-        notes.append(
-            "Spike detection skipped (needs per-window request counts and "
-            f"prior-day history, which a log file alone does not provide): {error}"
-        )
+    findings += SpikeDetector().detect(data)
     return format_report(findings, log_file=path, notes=notes)
 
 

@@ -1,3 +1,7 @@
 .env
 .ruff_cache/
-src/log_analyzer/__pycache__/
+# Generated Python files and local tooling state.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
