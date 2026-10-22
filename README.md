@@ -44,7 +44,9 @@ uv run log-analyzer data/sample.log --json report.json
 uv run --env-file .env log-analyzer data/sample.log --summary
 ```
 
-`--summary` needs `OPENAI_API_KEY`, for example in a git-ignored `.env` file. It sends the findings, aggregate error counts and up to 12 `ERROR` log lines to OpenAI, so only use it on logs you are allowed to share with that provider. The text report never depends on it.
+`--summary` needs `OPENAI_API_KEY`, for example in a git-ignored `.env` file. It sends the findings, aggregate error counts and up to 12 `ERROR` log lines to the configured provider, so only use it on logs you are allowed to share with that provider. The text report never depends on it.
+
+Set `ENDPOINT` to an HTTPS Responses-compatible API base URL (such as `https://RESOURCE.services.ai.azure.com/openai/v1`) or a full URL ending in `/responses`. If omitted, it defaults to `https://api.openai.com/v1/responses`. Azure endpoints use the `api-key` header; other endpoints use Bearer authentication. For Azure, set `OPENAI_MODEL` to the deployment name available on that resource. Load these settings with `uv run --env-file .env` as shown above.
 
 Exit codes: `0` when analysis completes (with or without findings); `1` when `--summary` fails (the report is still printed and any JSON is still saved, with `"summary": null`); `2` for a missing or unreadable log file, or a `--json` path that cannot be written.
 

@@ -6,6 +6,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from log_analyzer.detection.base import DetectionInput, Finding
@@ -86,17 +87,26 @@ class LLMSummarizer:
     @staticmethod
     def _request(payload: dict) -> dict:
         # uv --env-file loads the environment before this code runs.
-        # The key is used only in the Authorization header and never logged.
+        # Credentials are used only in request headers and never logged.
         key = os.environ.get("OPENAI_API_KEY")
         if not key:
             raise RuntimeError("Set OPENAI_API_KEY to run a live summary")
+        endpoint = os.environ.get("ENDPOINT", "https://api.openai.com/v1").strip()
+        url = urlsplit(endpoint)
+        if url.scheme != "https" or not url.hostname or url.username or url.password:
+            raise ValueError("ENDPOINT must be an HTTPS API base URL or Responses URL")
+        # Accept a v1 base URL or a complete Responses URL; preserve query options.
+        path = url.path.rstrip("/")
+        if not path.endswith("/responses"):
+            path += "/responses"
+        endpoint = urlunsplit((url.scheme, url.netloc, path, url.query, ""))
+        azure = url.hostname.endswith((".openai.azure.com", ".services.ai.azure.com"))
+        headers = {"Content-Type": "application/json"}
+        headers.update({"api-key": key} if azure else {"Authorization": f"Bearer {key}"})
         request = Request(
-            "https://api.openai.com/v1/responses",
+            endpoint,
             data=json.dumps(payload).encode(),
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             method="POST",
         )
         try:

@@ -269,3 +269,53 @@ def test_summary_missing_key_and_context_limits(monkeypatch):
     context = build_summary_context(DetectionInput(()), ())
     assert context["findings"] == []
     assert context["scope"]["error_log_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "endpoint, expected_url, auth_header",
+    [
+        (None, "https://api.openai.com/v1/responses", "Authorization"),
+        ("https://example.services.ai.azure.com/openai/v1/",
+         "https://example.services.ai.azure.com/openai/v1/responses", "Api-key"),
+        ("https://example.openai.azure.com/openai/v1/responses?api-version=test",
+         "https://example.openai.azure.com/openai/v1/responses?api-version=test", "Api-key"),
+    ],
+)
+def test_summary_endpoint_and_credentials(monkeypatch, endpoint, expected_url, auth_header):
+    """Verify the actual HTTP destination and authentication without sending secrets."""
+    import io
+    import json
+
+    from log_analyzer.detection import summary
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    if endpoint is None:
+        monkeypatch.delenv("ENDPOINT", raising=False)
+    else:
+        monkeypatch.setenv("ENDPOINT", endpoint)
+    captured = []
+
+    def fake_urlopen(request, timeout):
+        captured.append(request)
+        assert timeout == 60
+        return io.StringIO(json.dumps({"status": "completed", "output": []}))
+
+    monkeypatch.setattr(summary, "urlopen", fake_urlopen)
+    LLMSummarizer._request({"model": "test-deployment"})
+    request = captured[0]
+    assert request.full_url == expected_url
+    assert request.get_header(auth_header) == (
+        "test-key" if auth_header == "Api-key" else "Bearer test-key"
+    )
+    other_header = "Authorization" if auth_header == "Api-key" else "Api-key"
+    assert request.get_header(other_header) is None
+    assert json.loads(request.data)["model"] == "test-deployment"
+
+
+@pytest.mark.parametrize("endpoint", ["", "http://example.com/v1", "https://user:secret@example.com/v1"])
+def test_summary_rejects_invalid_endpoint(monkeypatch, endpoint):
+    """Reject invalid destinations before transmitting credentials."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("ENDPOINT", endpoint)
+    with pytest.raises(ValueError, match="ENDPOINT"):
+        LLMSummarizer._request({})
