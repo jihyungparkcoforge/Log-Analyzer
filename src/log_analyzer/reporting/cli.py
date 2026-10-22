@@ -21,7 +21,19 @@ DEFAULT_MODEL = "gpt-6-luna"
 def run_detectors(
     path: str | Path, log_parser: LogParser | None = None
 ) -> tuple[DetectionInput, list[Finding], list[str]]:
-    """Parse a log file and run both detectors; return the input, findings and notes."""
+    """Parse a log file and run both detectors with their default settings.
+
+    Args:
+        path: Log file to analyze.
+        log_parser: Parser to use; defaults to LogParser() (comma-separated format).
+
+    Returns:
+        The DetectionInput given to the detectors, the combined findings (unsorted),
+        and notes on how many entries were parsed and malformed lines skipped.
+
+    Raises:
+        OSError: If the file cannot be opened or read.
+    """
     result = (log_parser or LogParser()).parse_file(path)
     data = DetectionInput(result.entries)
     findings = list(RepeatedMessageDetector().detect(data))
@@ -37,12 +49,35 @@ def run_detectors(
 
 
 def analyze(path: str | Path) -> str:
-    """Parse a log file, run both detectors, and return the report text."""
+    """Parse a log file, run both detectors, and return the report text.
+
+    Args:
+        path: Log file to analyze.
+
+    Returns:
+        The plain-text report from format_report.
+
+    Raises:
+        OSError: If the file cannot be opened or read.
+    """
     _, findings, notes = run_detectors(path)
     return format_report(findings, log_file=path, notes=notes)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run the log-analyzer command line.
+
+    Prints the report to stdout, optionally appends an LLM summary (--summary)
+    and saves a JSON copy (--json). Errors go to stderr as one line, not a traceback.
+
+    Args:
+        argv: Command-line arguments without the program name; None reads sys.argv.
+
+    Returns:
+        Exit code: 0 on success (with or without findings), 1 if --summary failed
+        (the report is still printed and any JSON still saved), 2 for a missing or
+        unreadable log file or an unwritable --json path.
+    """
     parser = argparse.ArgumentParser(
         prog="log-analyzer",
         description="Analyze a log file and print a severity-sorted report.",

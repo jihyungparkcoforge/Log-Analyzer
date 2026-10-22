@@ -11,7 +11,18 @@ TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def sort_findings(findings: Iterable[Finding]) -> list[Finding]:
-    """Most severe first; ties broken by start time, then detector, service, message."""
+    """Order findings for display, most severe first.
+
+    Ties are broken by start time, then detector, service, message and description,
+    so the same findings always produce the same order. Unknown severities sort last,
+    and missing service/message values are treated as empty strings.
+
+    Args:
+        findings: Findings from any detectors, in any order.
+
+    Returns:
+        A new sorted list; the input is not modified.
+    """
     return sorted(
         findings,
         key=lambda f: (
@@ -26,6 +37,11 @@ def sort_findings(findings: Iterable[Finding]) -> list[Finding]:
 
 
 def _count_text(finding: Finding) -> str:
+    """Return the finding's count with a unit for its detector type.
+
+    "errors" for spikes, "occurrences" for repeated messages, and the bare
+    number for any other detector.
+    """
     if finding.detector == "spike":
         text = f"{finding.count} errors"
         return text
@@ -39,7 +55,20 @@ def format_report(
     log_file: str | Path | None = None,
     notes: Iterable[str] = (),
 ) -> str:
-    """Render findings as a plain-text report, most severe first."""
+    """Render findings as a plain-text report, most severe first.
+
+    Each finding is shown as its number, severity, title, start time, count, the
+    optional service and message, and the detector's own description. Nothing is
+    recalculated; an empty collection prints "No findings detected.".
+
+    Args:
+        findings: Findings from any detectors, in any order.
+        log_file: Path shown in the header; omitted when None.
+        notes: Extra lines listed under "Notes:", e.g. parse statistics.
+
+    Returns:
+        The report as one string, lines joined with newlines.
+    """
     ordered = sort_findings(findings)
     lines = [RULE, "LOG ANALYSIS REPORT", RULE]
     if log_file is not None:
@@ -77,7 +106,18 @@ def report_to_dict(
     notes: Iterable[str] = (),
     summary: str | None = None,
 ) -> dict:
-    """The same report as a JSON-serializable dict, in the same order."""
+    """Build the report as a JSON-serializable dict, in the same order as the text.
+
+    Args:
+        findings: Findings from any detectors, in any order.
+        log_file: Path of the analyzed log; stored as a string, or None.
+        notes: Extra lines, e.g. parse statistics.
+        summary: Optional LLM summary text; None when not requested or failed.
+
+    Returns:
+        A dict with log_file, finding_count, findings (every Finding field, with
+        started_at as an ISO 8601 string), notes and summary.
+    """
     ordered = sort_findings(findings)
     return {
         "log_file": None if log_file is None else str(log_file),
