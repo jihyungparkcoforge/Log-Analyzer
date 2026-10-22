@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from dataclasses import asdict
 from pathlib import Path
 
 from log_analyzer.detection import Finding
@@ -68,3 +69,22 @@ def format_report(
 
     lines.append(RULE)
     return "\n".join(lines)
+
+
+def report_to_dict(
+    findings: Iterable[Finding],
+    log_file: str | Path | None = None,
+    notes: Iterable[str] = (),
+    summary: str | None = None,
+) -> dict:
+    """The same report as a JSON-serializable dict, in the same order."""
+    ordered = sort_findings(findings)
+    return {
+        "log_file": None if log_file is None else str(log_file),
+        "finding_count": len(ordered),
+        "findings": [
+            {**asdict(f), "started_at": f.started_at.isoformat()} for f in ordered
+        ],
+        "notes": list(notes),
+        "summary": summary,
+    }

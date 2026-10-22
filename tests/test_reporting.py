@@ -1,7 +1,8 @@
+import json
 from datetime import datetime
 
 from log_analyzer.detection import Finding
-from log_analyzer.reporting import format_report, sort_findings
+from log_analyzer.reporting import format_report, report_to_dict, sort_findings
 
 T0 = datetime(2026, 10, 19, 15, 30, 0)
 T1 = datetime(2026, 10, 19, 15, 35, 2)
@@ -72,3 +73,25 @@ def test_empty_findings_and_notes():
     assert "Findings: 0" in report
     assert "No findings detected." in report
     assert "  - 73 malformed lines skipped" in report
+
+
+def test_report_dict_matches_text_order_and_is_json_safe():
+    findings = [repeated("warning"), spike("critical")]
+    report = report_to_dict(findings, log_file="data/sample.log", notes=["n"])
+    assert json.loads(json.dumps(report)) == report
+    assert report["log_file"] == "data/sample.log"
+    assert report["finding_count"] == 2
+    assert [f["severity"] for f in report["findings"]] == ["critical", "warning"]
+    assert report["findings"][0]["started_at"] == "2026-10-19T15:30:00"
+    assert report["findings"][0]["count"] == 36
+    assert report["findings"][1]["service"] == "api-gateway"
+    assert report["notes"] == ["n"]
+    assert report["summary"] is None
+
+
+def test_empty_report_dict():
+    report = report_to_dict([], summary="text")
+    assert report["log_file"] is None
+    assert report["finding_count"] == 0
+    assert report["findings"] == []
+    assert report["summary"] == "text"
