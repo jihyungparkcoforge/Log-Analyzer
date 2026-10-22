@@ -68,9 +68,7 @@ def run_detectors(
     return data, findings, notes
 
 
-def analyze(
-    path: str | Path, strategy: LineParseStrategy | None = None
-) -> str:
+def analyze(path: str | Path, strategy: LineParseStrategy | None = None) -> str:
     """Parse a log file, run both detectors, and return the report text.
 
     Args:

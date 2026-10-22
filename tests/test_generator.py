@@ -221,7 +221,9 @@ def test_unknown_format_exits_2_and_writes_nothing(extra, fixtures, tmp_path, ca
     """An unsupported --format writes nothing."""
     argv = [str(tmp_path / "x.log") if a == "OUT" else a for a in extra]
     assert gen.main([*argv, "--format", "xml"], fixtures=fixtures) == 2
-    assert "unsupported format 'xml' (supported: comma, json)" in capsys.readouterr().err
+    assert (
+        "unsupported format 'xml' (supported: comma, json)" in capsys.readouterr().err
+    )
     assert not (tmp_path / "x.log").exists()
     assert not fixtures["comma"].parent.exists()
 
