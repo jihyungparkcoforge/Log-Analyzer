@@ -275,13 +275,21 @@ def test_summary_missing_key_and_context_limits(monkeypatch):
     "endpoint, expected_url, auth_header",
     [
         (None, "https://api.openai.com/v1/responses", "Authorization"),
-        ("https://example.services.ai.azure.com/openai/v1/",
-         "https://example.services.ai.azure.com/openai/v1/responses", "Api-key"),
-        ("https://example.openai.azure.com/openai/v1/responses?api-version=test",
-         "https://example.openai.azure.com/openai/v1/responses?api-version=test", "Api-key"),
+        (
+            "https://example.services.ai.azure.com/openai/v1/",
+            "https://example.services.ai.azure.com/openai/v1/responses",
+            "Api-key",
+        ),
+        (
+            "https://example.openai.azure.com/openai/v1/responses?api-version=test",
+            "https://example.openai.azure.com/openai/v1/responses?api-version=test",
+            "Api-key",
+        ),
     ],
 )
-def test_summary_endpoint_and_credentials(monkeypatch, endpoint, expected_url, auth_header):
+def test_summary_endpoint_and_credentials(
+    monkeypatch, endpoint, expected_url, auth_header
+):
     """Verify the actual HTTP destination and authentication without sending secrets."""
     import io
     import json
@@ -312,7 +320,9 @@ def test_summary_endpoint_and_credentials(monkeypatch, endpoint, expected_url, a
     assert json.loads(request.data)["model"] == "test-deployment"
 
 
-@pytest.mark.parametrize("endpoint", ["", "http://example.com/v1", "https://user:secret@example.com/v1"])
+@pytest.mark.parametrize(
+    "endpoint", ["", "http://example.com/v1", "https://user:secret@example.com/v1"]
+)
 def test_summary_rejects_invalid_endpoint(monkeypatch, endpoint):
     """Reject invalid destinations before transmitting credentials."""
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")

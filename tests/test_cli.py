@@ -1,4 +1,5 @@
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -207,14 +208,18 @@ def test_format_json_flag_parses_and_reports(capsys, tmp_path):
     assert "malformed" not in out
 
 
-def test_json_file_without_flag_uses_comma_and_skips_every_line(capsys, tmp_path):
-    """With no flag and no metadata the default is comma, so JSON lines are malformed."""
+def test_json_file_without_flag_aborts_when_malformed_rate_exceeds_threshold(
+    capsys, tmp_path
+):
+    """Wrong format: 100% malformed exceeds the default 50% threshold and aborts."""
     log = tmp_path / "burst.jsonl"
     write_json_log(log)
-    assert main([str(log)]) == 0
-    out = capsys.readouterr().out
-    assert "0 entries parsed" in out
-    assert "50 malformed lines skipped" in out
+    assert main([str(log)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "100.0%" in captured.err
+    assert "50.0%" in captured.err
+    assert "MALFORMED_THRESHOLD_PERCENT" in captured.err
 
 
 def test_sibling_metadata_format_selects_json(capsys, tmp_path):
@@ -229,12 +234,46 @@ def test_sibling_metadata_format_selects_json(capsys, tmp_path):
 
 
 def test_format_flag_overrides_metadata(capsys, tmp_path):
-    """--format wins over the metadata's format."""
+    """--format wins over the metadata's format; 100% skip aborts without a TTY."""
     log = tmp_path / "burst.log"
     write_json_log(log)
     (tmp_path / "burst.log.metadata.json").write_text(json.dumps({"format": "json"}))
-    assert main(["--format", "comma", str(log)]) == 0
-    assert "0 entries parsed" in capsys.readouterr().out
+    assert main(["--format", "comma", str(log)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "100.0%" in captured.err
+
+
+def test_malformed_over_threshold_tty_yes_continues(capsys, tmp_path, monkeypatch):
+    """A terminal user can confirm and still get the report."""
+    log = tmp_path / "burst.jsonl"
+    write_json_log(log)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    assert main([str(log)]) == 0
+    captured = capsys.readouterr()
+    assert "LOG ANALYSIS REPORT" in captured.out
+    assert "100.0%" in captured.err
+
+
+def test_malformed_over_threshold_tty_no_aborts(capsys, tmp_path, monkeypatch):
+    """Declining the prompt aborts without a report."""
+    log = tmp_path / "burst.jsonl"
+    write_json_log(log)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    assert main([str(log)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "100.0%" in captured.err
+
+
+def test_sample_log_stays_under_malformed_threshold(capsys):
+    """The committed sample is ~2% malformed, below the default 50% gate."""
+    assert main([str(SAMPLE)]) == 0
+    captured = capsys.readouterr()
+    assert "LOG ANALYSIS REPORT" in captured.out
+    assert "MALFORMED_THRESHOLD_PERCENT" not in captured.err
 
 
 def test_metadata_without_format_key_defaults_to_comma(capsys, tmp_path):
@@ -304,16 +343,18 @@ def test_dotenv_overrides_stale_exports_but_not_model_flag(
         monkeypatch.setenv(name, "stale-export")
     (tmp_path / ".env").write_text(
         'OPENAI_API_KEY="local-test-key"\n'
-        'ENDPOINT=https://example.services.ai.azure.com/openai/v1\n'
-        'OPENAI_MODEL=local-deployment\n'
-        'UNRELATED_SETTING=should-not-load\n'
+        "ENDPOINT=https://example.services.ai.azure.com/openai/v1\n"
+        "OPENAI_MODEL=local-deployment\n"
+        "UNRELATED_SETTING=should-not-load\n"
     )
     monkeypatch.delenv("UNRELATED_SETTING", raising=False)
     expected_model = explicit_model or "local-deployment"
 
     def fake_summary(self, context):
         assert os.environ["OPENAI_API_KEY"] == "local-test-key"
-        assert os.environ["ENDPOINT"] == "https://example.services.ai.azure.com/openai/v1"
+        assert (
+            os.environ["ENDPOINT"] == "https://example.services.ai.azure.com/openai/v1"
+        )
         assert "UNRELATED_SETTING" not in os.environ
         assert self.model == expected_model
         return "Summary from local settings."

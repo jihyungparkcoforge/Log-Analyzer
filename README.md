@@ -41,6 +41,8 @@ uv run log-analyzer data/sample.log
 
 The log format is chosen in this order: `--format comma|json` if given; otherwise the `"format"` in a sibling `<log file>.metadata.json` if that file exists (this is how `data/sample.log` and `data/sample.jsonl` work); otherwise `comma`. The log's contents are never sniffed, and an unknown format exits `2` without analyzing.
 
+If skipped lines exceed `MALFORMED_THRESHOLD_PERCENT` (a fraction of all lines; default `0.5` = 50%, from `.env`), the CLI prints the observed percent on stderr and aborts unless you confirm in a terminal.
+
 ```
 uv run log-analyzer data/sample.jsonl
 uv run log-analyzer --format json some.jsonl
@@ -62,9 +64,9 @@ uv run log-analyzer data/sample.log --summary
 
 `--summary` needs `OPENAI_API_KEY`, for example in a git-ignored `.env` file. It sends the findings, aggregate error counts and up to 12 `ERROR` log lines to the configured provider, so only use it on logs you are allowed to share with that provider. The text report never depends on it.
 
-Set `ENDPOINT` to an HTTPS Responses-compatible API base URL (such as `https://RESOURCE.services.ai.azure.com/openai/v1`) or a full URL ending in `/responses`. If omitted, it defaults to `https://api.openai.com/v1/responses`. Azure endpoints use the `api-key` header; other endpoints use Bearer authentication. For Azure, set `OPENAI_MODEL` to the deployment name available on that resource. The CLI automatically reads `.env` from the current working directory. Its `OPENAI_API_KEY`, `ENDPOINT`, and `OPENAI_MODEL` values override existing shell variables; unrelated variables are not loaded. An explicit `--model` still takes priority. If `.env` is absent, existing environment variables and defaults are used. Run from the project directory to load the project’s `.env`.
+Set `ENDPOINT` to an HTTPS Responses-compatible API base URL (such as `https://RESOURCE.services.ai.azure.com/openai/v1`) or a full URL ending in `/responses`. If omitted, it defaults to `https://api.openai.com/v1/responses`. Azure endpoints use the `api-key` header; other endpoints use Bearer authentication. For Azure, set `OPENAI_MODEL` to the deployment name available on that resource. The CLI automatically reads `.env` from the current working directory. Its `OPENAI_API_KEY`, `ENDPOINT`, `OPENAI_MODEL`, and `MALFORMED_THRESHOLD_PERCENT` values override existing shell variables; unrelated variables are not loaded. An explicit `--model` still takes priority. If `.env` is absent, existing environment variables and defaults are used. Run from the project directory to load the project’s `.env`.
 
-Exit codes: `0` when analysis completes (with or without findings); `1` when `--summary` fails (the report is still printed and any JSON is still saved, with `"summary": null`); `2` for a missing or unreadable log file, an unknown `--format`, or a `--json` path that cannot be written.
+Exit codes: `0` when analysis completes (with or without findings); `1` when `--summary` fails (the report is still printed and any JSON is still saved, with `"summary": null`); `2` for a missing or unreadable log file, an unknown `--format`, a `--json` path that cannot be written, or a malformed-line rate above `MALFORMED_THRESHOLD_PERCENT` without confirmation.
 
 ## What the report contains
 

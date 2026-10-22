@@ -14,11 +14,69 @@ from log_analyzer.detection import (
     SpikeDetector,
 )
 from log_analyzer.detection.summary import LLMSummarizer, build_summary_context
+from log_analyzer.models import ParseResult
 from log_analyzer.parsing import STRATEGIES, LineParseStrategy, LogParser
 from log_analyzer.reporting.reporter import RULE, format_report, report_to_dict
 
 DEFAULT_MODEL = "gpt-6-luna"
 DEFAULT_FORMAT = "comma"
+DEFAULT_MALFORMED_THRESHOLD = 0.5
+
+
+class MalformedThresholdExceeded(Exception):
+    """Too many lines failed to parse to continue without confirmation."""
+
+
+def _malformed_threshold() -> float:
+    """Read MALFORMED_THRESHOLD_PERCENT as a fraction of lines (0.5 = 50%)."""
+    raw = os.environ.get(
+        "MALFORMED_THRESHOLD_PERCENT", str(DEFAULT_MALFORMED_THRESHOLD)
+    )
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MALFORMED_THRESHOLD
+    if not 0 <= value <= 1:
+        return DEFAULT_MALFORMED_THRESHOLD
+    return value
+
+
+def _malformed_rate(result: ParseResult) -> float:
+    """Share of parsed lines that were unreadable; 0 for an empty file."""
+    total = len(result.entries) + result.malformed_count
+    if total == 0:
+        return 0.0
+    return result.malformed_count / total
+
+
+def confirm_malformed_or_raise(result: ParseResult) -> None:
+    """Abort when the malformed fraction is above the configured threshold.
+
+    Prints the observed percent and threshold on stderr. A TTY may confirm
+    continue; a pipe or pytest run always aborts.
+
+    Raises:
+        MalformedThresholdExceeded: The caller should exit 2 without a report.
+    """
+    threshold = _malformed_threshold()
+    rate = _malformed_rate(result)
+    if rate <= threshold:
+        return
+    total = len(result.entries) + result.malformed_count
+    print(
+        f"warning: {result.malformed_count} of {total} lines ({rate:.1%}) were "
+        f"malformed; threshold is {threshold:.1%} "
+        f"(MALFORMED_THRESHOLD_PERCENT). Raise it in .env to allow this file.",
+        file=sys.stderr,
+    )
+    if sys.stdin.isatty():
+        try:
+            answer = input("Continue analysis? [y/N] ")
+        except EOFError:
+            raise MalformedThresholdExceeded from None
+        if answer.strip().lower() in {"y", "yes"}:
+            return
+    raise MalformedThresholdExceeded
 
 
 def resolve_format(path: str | Path, explicit: str | None = None) -> str:
@@ -55,8 +113,11 @@ def run_detectors(
 
     Raises:
         OSError: If the file cannot be opened or read.
+        MalformedThresholdExceeded: Malformed rate is above the configured
+            threshold and the user did not confirm continue.
     """
     result = (log_parser or LogParser()).parse_file(path)
+    confirm_malformed_or_raise(result)
     data = DetectionInput(result.entries)
     findings = list(RepeatedMessageDetector().detect(data))
     notes = [f"{len(result.entries)} entries parsed"]
@@ -100,12 +161,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     Returns:
         Exit code: 0 on success (with or without findings), 1 if --summary failed
         (the report is still printed and any JSON still saved), 2 for a missing or
-        unreadable log file, an unknown --format, or an unwritable --json path.
+        unreadable log file, an unknown --format, an unwritable --json path,
+        or a malformed-line rate above MALFORMED_THRESHOLD_PERCENT without confirm.
     """
     # Read the working directory's .env before resolving the default model.
     # Local LLM settings override stale exports; unrelated variables are untouched.
     settings = dotenv_values(Path.cwd() / ".env")
-    for name in ("OPENAI_API_KEY", "ENDPOINT", "OPENAI_MODEL"):
+    for name in (
+        "OPENAI_API_KEY",
+        "ENDPOINT",
+        "OPENAI_MODEL",
+        "MALFORMED_THRESHOLD_PERCENT",
+    ):
         if settings.get(name) is not None:
             os.environ[name] = settings[name]
 
@@ -157,6 +224,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except OSError as error:
         print(f"error: cannot read {path}: {error.strerror or error}", file=sys.stderr)
+        return 2
+    except MalformedThresholdExceeded:
         return 2
 
     summary = summary_error = None
