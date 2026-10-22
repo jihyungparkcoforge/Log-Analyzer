@@ -2,6 +2,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from log_analyzer.detection import (
     DetectionInput,
     RepeatedMessageDetector,
@@ -14,6 +16,12 @@ from log_analyzer.reporting.cli import main, resolve_format
 
 DATA = Path(__file__).parent.parent / "data"
 SAMPLE = DATA / "sample.log"
+
+
+@pytest.fixture(autouse=True)
+def isolated_env_file(monkeypatch, tmp_path):
+    """Never load the developer's real credentials during CLI tests."""
+    monkeypatch.chdir(tmp_path)
 
 
 def test_valid_log_prints_report_to_stdout(capsys):
@@ -283,3 +291,36 @@ def test_committed_jsonl_sample_matches_comma_findings(capsys):
     assert "[CRITICAL] Error spike" in out
     for count in spike["window_error_counts"]:
         assert f"Count:   {count} errors" in out
+
+
+@pytest.mark.parametrize("explicit_model", [None, "cli-deployment"])
+def test_dotenv_overrides_stale_exports_but_not_model_flag(
+    monkeypatch, tmp_path, capsys, explicit_model
+):
+    """Load local credentials automatically while keeping --model highest priority."""
+    import os
+
+    for name in ("OPENAI_API_KEY", "ENDPOINT", "OPENAI_MODEL"):
+        monkeypatch.setenv(name, "stale-export")
+    (tmp_path / ".env").write_text(
+        'OPENAI_API_KEY="local-test-key"\n'
+        'ENDPOINT=https://example.services.ai.azure.com/openai/v1\n'
+        'OPENAI_MODEL=local-deployment\n'
+        'UNRELATED_SETTING=should-not-load\n'
+    )
+    monkeypatch.delenv("UNRELATED_SETTING", raising=False)
+    expected_model = explicit_model or "local-deployment"
+
+    def fake_summary(self, context):
+        assert os.environ["OPENAI_API_KEY"] == "local-test-key"
+        assert os.environ["ENDPOINT"] == "https://example.services.ai.azure.com/openai/v1"
+        assert "UNRELATED_SETTING" not in os.environ
+        assert self.model == expected_model
+        return "Summary from local settings."
+
+    monkeypatch.setattr(LLMSummarizer, "summarize", fake_summary)
+    args = [str(SAMPLE), "--summary"]
+    if explicit_model:
+        args += ["--model", explicit_model]
+    assert main(args) == 0
+    assert "Summary from local settings." in capsys.readouterr().out
