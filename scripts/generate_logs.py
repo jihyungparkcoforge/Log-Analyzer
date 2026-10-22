@@ -87,7 +87,10 @@ WARNING_MESSAGES = [
 ]
 # `{uid}` is unique within a run, so background errors never form repeat alerts.
 BACKGROUND_ERRORS = {
-    "payment-service": ["Card declined order_id={uid}", "Gateway returned 502 order_id={uid}"],
+    "payment-service": [
+        "Card declined order_id={uid}",
+        "Gateway returned 502 order_id={uid}",
+    ],
     "order-service": ["Failed to persist order order_id={uid}"],
     "auth-service": ["Invalid credentials user_id={uid}"],
     "inventory-service": ["Stock mismatch sku=SKU-{uid}"],
@@ -178,21 +181,32 @@ class CommaSerializer:
         if spec.kind == "bad_timestamp":
             clock = stamp.split(" ")[1]
             bad = rng.choice(
-                [f"20XX-10-19 {clock}", f"2026-13-45 {clock}", f"2026-10-19T{clock}", f"19/10/2026 {clock}"]
+                [
+                    f"20XX-10-19 {clock}",
+                    f"2026-13-45 {clock}",
+                    f"2026-10-19T{clock}",
+                    f"19/10/2026 {clock}",
+                ]
             )
             return f"{bad},{base.level},{base.service},{base.message}"
         if spec.kind == "unknown_level":
             level = rng.choice(["FATAL", "FATAL", "CRITICAL", "DEBUG"])
             return f"{stamp},{level},{base.service},{base.message}"
         if spec.kind == "missing_fields":
-            return rng.choice([f"{stamp},{base.level}", f"{stamp},{base.level},{base.service}", stamp])
+            return rng.choice(
+                [f"{stamp},{base.level}", f"{stamp},{base.level},{base.service}", stamp]
+            )
         if spec.kind == "truncated":
             # Cut before the third comma so fewer than four fields remain.
             line = self._line(base)
             third_comma = line.index(",", line.index(",", line.index(",") + 1) + 1)
             return line[: rng.randint(1, third_comma)]
         if spec.kind == "garbage":
-            alphabet = "".join(c for c in string.ascii_letters + string.digits + string.punctuation if c != ",")
+            alphabet = "".join(
+                c
+                for c in string.ascii_letters + string.digits + string.punctuation
+                if c != ","
+            )
             return "".join(rng.choice(alphabet) for _ in range(rng.randint(20, 60)))
         if spec.kind == "blank":
             return rng.choice(["", "", "   ", "\t"])
@@ -257,7 +271,11 @@ def plan_items(rng: random.Random) -> list[Item]:
     while window_start < END:
         window_end = window_start + WINDOW
         for _ in range(rng.randint(85, 115)):
-            items.append(_background_event(rng, fill, _random_time(rng, window_start, window_end)))
+            items.append(
+                _background_event(
+                    rng, fill, _random_time(rng, window_start, window_end)
+                )
+            )
         if SPIKE_START <= window_start < SPIKE_END:
             repeats = rng.randint(*REPEATS_PER_SPIKE_WINDOW)
             for _ in range(repeats):
@@ -333,13 +351,20 @@ def build_metadata(items: list[Item], line_count: int, fmt: str) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     """Generate the sample log and its metadata; return a process exit code."""
-    parser = argparse.ArgumentParser(description="Regenerate data/sample.log and its metadata.")
-    parser.add_argument("--format", default="comma", help="output format (supported: comma)")
+    parser = argparse.ArgumentParser(
+        description="Regenerate data/sample.log and its metadata."
+    )
+    parser.add_argument(
+        "--format", default="comma", help="output format (supported: comma)"
+    )
     args = parser.parse_args(argv)
 
     if args.format not in SERIALIZERS:
         supported = ", ".join(SERIALIZERS)
-        print(f"unsupported format '{args.format}' (supported: {supported})", file=sys.stderr)
+        print(
+            f"unsupported format '{args.format}' (supported: {supported})",
+            file=sys.stderr,
+        )
         return 2
 
     rng = random.Random()
