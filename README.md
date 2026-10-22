@@ -59,89 +59,54 @@ Both detectors consume `DetectionInput(result.entries)`. No request counts or ex
 
 Each finding shows its severity, type, start time, count, service, message and the detector's description. Findings are sorted `critical` before `warning`; equal severities are ordered by start time, then detector, service and message, so the output is deterministic. With no findings the report says `No findings detected.`
 
-Excerpt of the actual output for `data/sample.log`:
+Actual output for the committed `data/sample.log` (generated with `--seed 42`; see [`data/README.md`](data/README.md)). The planted incident at 15:30–15:45 shows up as an error spike in each of its three windows, each paired with the repeated payment-service timeout behind it:
 
 ```
 ============================================================
 LOG ANALYSIS REPORT
 ============================================================
 Log file: data/sample.log
-Findings: 11
+Findings: 6
 
 1. [CRITICAL] Error spike
    Started: 2026-10-19 15:30:00
-   Count:   36 errors
-   Details: 36 ERROR events in the 5-minute window starting 2026-10-19T15:30:00; threshold 10, baseline median 2.5 from 12 prior non-alert windows.
+   Count:   39 errors
+   Details: 39 ERROR events in the 5-minute window starting 2026-10-19T15:30:00; threshold 10, baseline median 1 from 12 prior non-alert windows.
 
 2. [CRITICAL] Repeated error message
-   Started: 2026-10-19 15:30:16
-   Count:   14 occurrences
+   Started: 2026-10-19 15:30:11
+   Count:   23 occurrences
    Service: payment-service
    Message: Connection timeout to db-primary
-   Details: payment-service: 'Connection timeout to db-primary' repeated 14 times in the 5-minute window starting 2026-10-19T15:30:00
+   Details: payment-service: 'Connection timeout to db-primary' repeated 23 times in the 5-minute window starting 2026-10-19T15:30:00
 
 3. [CRITICAL] Error spike
    Started: 2026-10-19 15:35:00
-   Count:   49 errors
-   Details: 49 ERROR events in the 5-minute window starting 2026-10-19T15:35:00; threshold 10, baseline median 2.5 from 12 prior non-alert windows.
+   Count:   35 errors
+   Details: 35 ERROR events in the 5-minute window starting 2026-10-19T15:35:00; threshold 10, baseline median 1 from 12 prior non-alert windows.
 
 4. [CRITICAL] Repeated error message
    Started: 2026-10-19 15:35:02
-   Count:   19 occurrences
+   Count:   21 occurrences
    Service: payment-service
    Message: Connection timeout to db-primary
-   Details: payment-service: 'Connection timeout to db-primary' repeated 19 times in the 5-minute window starting 2026-10-19T15:35:00
+   Details: payment-service: 'Connection timeout to db-primary' repeated 21 times in the 5-minute window starting 2026-10-19T15:35:00
 
 5. [CRITICAL] Error spike
    Started: 2026-10-19 15:40:00
-   Count:   52 errors
-   Details: 52 ERROR events in the 5-minute window starting 2026-10-19T15:40:00; threshold 10, baseline median 2.5 from 12 prior non-alert windows.
+   Count:   37 errors
+   Details: 37 ERROR events in the 5-minute window starting 2026-10-19T15:40:00; threshold 10, baseline median 1 from 12 prior non-alert windows.
 
 6. [CRITICAL] Repeated error message
-   Started: 2026-10-19 15:40:07
+   Started: 2026-10-19 15:40:03
    Count:   22 occurrences
    Service: payment-service
    Message: Connection timeout to db-primary
    Details: payment-service: 'Connection timeout to db-primary' repeated 22 times in the 5-minute window starting 2026-10-19T15:40:00
 
-7. [WARNING] Repeated error message
-   Started: 2026-10-19 15:30:05
-   Count:   6 occurrences
-   Service: payment-service
-   Message: Connection pool exhausted
-   Details: payment-service: 'Connection pool exhausted' repeated 6 times in the 5-minute window starting 2026-10-19T15:30:00
-
-8. [WARNING] Repeated error message
-   Started: 2026-10-19 15:30:48
-   Count:   7 occurrences
-   Service: api-gateway
-   Message: Upstream payment-service returned 502
-   Details: api-gateway: 'Upstream payment-service returned 502' repeated 7 times in the 5-minute window starting 2026-10-19T15:30:00
-
-9. [WARNING] Repeated error message
-   Started: 2026-10-19 15:35:31
-   Count:   7 occurrences
-   Service: api-gateway
-   Message: Upstream payment-service returned 502
-   Details: api-gateway: 'Upstream payment-service returned 502' repeated 7 times in the 5-minute window starting 2026-10-19T15:35:00
-
-10. [WARNING] Repeated error message
-   Started: 2026-10-19 15:35:35
-   Count:   9 occurrences
-   Service: payment-service
-   Message: Connection pool exhausted
-   Details: payment-service: 'Connection pool exhausted' repeated 9 times in the 5-minute window starting 2026-10-19T15:35:00
-
-11. [WARNING] Repeated error message
-   Started: 2026-10-19 15:40:52
-   Count:   8 occurrences
-   Service: api-gateway
-   Message: Upstream payment-service returned 502
-   Details: api-gateway: 'Upstream payment-service returned 502' repeated 8 times in the 5-minute window starting 2026-10-19T15:40:00
-
 Notes:
-  - 3558 entries parsed
-  - 73 malformed lines skipped (bad_timestamp: 19, blank_line: 12, missing_fields: 35, unknown_level: 7)
+  - 3699 entries parsed
+  - 75 malformed lines skipped (bad_timestamp: 11, blank_line: 11, missing_fields: 43, unknown_level: 10)
 
 ============================================================
 ```
