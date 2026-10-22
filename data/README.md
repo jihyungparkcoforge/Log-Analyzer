@@ -35,6 +35,16 @@ About 2% of lines are deliberately broken. A parser should skip and count them, 
 
 ## Metadata keys
 
-`seed`, `start`, `end`, `total_lines`, `malformed_lines`, `malformed_by_kind`, and `spike` (`start`, `end`, `approx_error_count`, `dominant_service`, `top_message_template`).
+`format`, `start`, `end`, `total_lines`, `malformed_lines`, `malformed_by_kind`, and `spike` (`start`, `end`, `window_error_counts`, `approx_error_count`, `dominant_service`, `top_message_template`).
+
+`window_error_counts` holds the parseable ERROR count for each of the three 5-minute windows inside the spike; `approx_error_count` is their sum. `malformed_by_kind` uses the generator's labels, not the parser's reason tags.
+
+## Regenerating
+
+```
+uv run python scripts/generate_logs.py            # same as --format comma
+```
+
+Every run overwrites both files, and background traffic is unseeded, so the bytes change each time while the planted incident and the metadata stay consistent. Regenerate, then commit both files together. Tests never run the generator.
 
 `total_lines - malformed_lines` is the number of entries a correct parser should return.

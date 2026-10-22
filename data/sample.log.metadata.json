@@ -1,22 +1,27 @@
 {
-  "seed": 42,
+  "format": "comma",
   "start": "2026-10-19 14:00:00",
   "end": "2026-10-19 17:00:00",
-  "total_lines": 3631,
-  "malformed_lines": 73,
+  "total_lines": 3867,
+  "malformed_lines": 77,
   "malformed_by_kind": {
-    "bad_timestamp": 19,
+    "bad_timestamp": 11,
     "garbage": 11,
-    "truncated": 9,
-    "missing_fields": 7,
-    "blank": 12,
-    "stack_trace": 8,
-    "unknown_level": 7
+    "truncated": 11,
+    "missing_fields": 11,
+    "blank": 11,
+    "stack_trace": 11,
+    "unknown_level": 11
   },
   "spike": {
     "start": "2026-10-19 15:30:00",
     "end": "2026-10-19 15:45:00",
-    "approx_error_count": 135,
+    "window_error_counts": [
+      36,
+      36,
+      37
+    ],
+    "approx_error_count": 109,
     "dominant_service": "payment-service",
     "top_message_template": "Connection timeout to db-primary"
   }
