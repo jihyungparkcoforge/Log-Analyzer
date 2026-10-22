@@ -102,7 +102,9 @@ class LLMSummarizer:
         endpoint = urlunsplit((url.scheme, url.netloc, path, url.query, ""))
         azure = url.hostname.endswith((".openai.azure.com", ".services.ai.azure.com"))
         headers = {"Content-Type": "application/json"}
-        headers.update({"api-key": key} if azure else {"Authorization": f"Bearer {key}"})
+        headers.update(
+            {"api-key": key} if azure else {"Authorization": f"Bearer {key}"}
+        )
         request = Request(
             endpoint,
             data=json.dumps(payload).encode(),
