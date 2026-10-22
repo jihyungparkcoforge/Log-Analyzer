@@ -2,12 +2,12 @@
   "format": "comma",
   "start": "2026-10-19 14:00:00",
   "end": "2026-10-19 17:00:00",
-  "total_lines": 3867,
-  "malformed_lines": 77,
+  "total_lines": 4009,
+  "malformed_lines": 80,
   "malformed_by_kind": {
-    "bad_timestamp": 11,
-    "garbage": 11,
-    "truncated": 11,
+    "bad_timestamp": 12,
+    "garbage": 12,
+    "truncated": 12,
     "missing_fields": 11,
     "blank": 11,
     "stack_trace": 11,
@@ -17,11 +17,11 @@
     "start": "2026-10-19 15:30:00",
     "end": "2026-10-19 15:45:00",
     "window_error_counts": [
-      36,
-      36,
-      37
+      45,
+      41,
+      48
     ],
-    "approx_error_count": 109,
+    "approx_error_count": 134,
     "dominant_service": "payment-service",
     "top_message_template": "Connection timeout to db-primary"
   }
