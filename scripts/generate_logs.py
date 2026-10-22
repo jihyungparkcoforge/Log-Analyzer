@@ -1,10 +1,22 @@
-"""Regenerate data/sample.log and data/sample.log.metadata.json.
+"""Regenerate the committed sample logs, or write a throwaway log elsewhere.
 
-Every run is unseeded, so background traffic differs between runs; the planted
-incident is built by construction and always fires both detectors. Metadata is
-computed from the lines actually written. Humans regenerate, then commit both files.
+Two modes:
 
-    uv run python scripts/generate_logs.py [--format comma]
+    # Fixture mode: one seeded plan, written once per registered serializer to its
+    # FIXTURES path, each with a sibling <path>.metadata.json. Same seed, same bytes.
+    uv run python scripts/generate_logs.py --seed 42
+
+    # Ad-hoc mode: one file at --out plus <out>.metadata.json; never touches data/.
+    # --seed is optional (reproducible if given); --format defaults to comma.
+    uv run python scripts/generate_logs.py --out /tmp/foo.log [--format comma] [--seed 7]
+
+With --seed and --out together, ad-hoc wins: only --out is written. With neither,
+the script exits 2 instead of overwriting the fixtures. FIXTURES already reserves
+a slot per planned format; formats missing from SERIALIZERS are skipped, so
+registering a new serializer is enough for fixture mode to write its file too.
+
+The planted incident is built by construction and always fires both detectors, and
+metadata is computed from the lines actually written. Commit the fixtures together.
 """
 
 import argparse
@@ -12,6 +24,7 @@ import json
 import random
 import string
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,8 +32,12 @@ from typing import Protocol
 
 # Output locations, resolved from this file so the script works from any cwd.
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-LOG_PATH = DATA_DIR / "sample.log"
-METADATA_PATH = DATA_DIR / "sample.log.metadata.json"
+# Fixture-mode path per format name. "json" is reserved for a serializer that is
+# registered later; until it is in SERIALIZERS, fixture mode skips it.
+FIXTURES = {
+    "comma": DATA_DIR / "sample.log",
+    "json": DATA_DIR / "sample.jsonl",
+}
 
 # Log span is [START, END); the incident is [SPIKE_START, SPIKE_END), three 5-minute windows.
 START = datetime(2026, 10, 19, 14, 0, 0)
@@ -397,7 +414,9 @@ def plan_items(rng: random.Random) -> list[Item]:
     return items
 
 
-def build_metadata(items: list[Item], line_count: int, fmt: str) -> dict:
+def build_metadata(
+    items: list[Item], line_count: int, fmt: str, seed: int | None = None
+) -> dict:
     """Describe the file just written, using only its items and line count.
 
     Only well-formed ERROR events count toward `window_error_counts`.
@@ -406,6 +425,7 @@ def build_metadata(items: list[Item], line_count: int, fmt: str) -> dict:
         items: Everything that was serialized, in file order.
         line_count: Number of lines actually written, blanks included.
         fmt: Name of the format the file was written in.
+        seed: The seed the run used; the "seed" key is omitted when None.
 
     Returns:
         A JSON-serializable dict matching data/README.md's metadata keys.
@@ -428,8 +448,10 @@ def build_metadata(items: list[Item], line_count: int, fmt: str) -> dict:
             )
         )
         window_start = window_end
-    return {
-        "format": fmt,
+    metadata = {"format": fmt}
+    if seed is not None:
+        metadata["seed"] = seed
+    return metadata | {
         "start": f"{START:%Y-%m-%d %H:%M:%S}",
         "end": f"{END:%Y-%m-%d %H:%M:%S}",
         "total_lines": line_count,
@@ -446,45 +468,115 @@ def build_metadata(items: list[Item], line_count: int, fmt: str) -> dict:
     }
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Generate the sample log and its metadata.
+def write_log(
+    path: Path, items: list[Item], serializer: Serializer, seed: int | None = None
+) -> dict:
+    """Serialize `items` to `path` and write `<path>.metadata.json` beside it.
+
+    Metadata comes from this write: the real line count, the malformed items and
+    the planted-window error counts.
+
+    Args:
+        path: Log file to write; missing parent directories are created.
+        items: The planned events and malformed specs, in file order.
+        serializer: Turns each item into one line of the output format.
+        seed: Recorded as the metadata's "seed" when given.
+
+    Returns:
+        The metadata that was written.
+
+    Raises:
+        RuntimeError: If a serialized line contained a newline.
+    """
+    text = "".join(serializer.serialize(item) + "\n" for item in items)
+    # Every line ends in exactly one newline, so this is the real written line count.
+    line_count = text.count("\n")
+    if line_count != len(items):
+        raise RuntimeError("a serialized line contained a newline")
+    metadata = build_metadata(items, line_count, serializer.name, seed)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as log:
+        log.write(text)
+    metadata_path = Path(f"{path}.metadata.json")
+    with open(metadata_path, "w", encoding="utf-8", newline="\n") as meta:
+        meta.write(json.dumps(metadata, indent=2) + "\n")
+    print(f"wrote {path} ({line_count} lines) and {metadata_path}")
+    return metadata
+
+
+def _serializer(name: str, seed: int | None, rng: random.Random) -> Serializer:
+    """Build the named serializer with its own random source.
+
+    With a seed each serializer gets an independent stream derived from the seed
+    and its name, so one format's bytes never depend on which others are registered.
+
+    Args:
+        name: A key of SERIALIZERS.
+        seed: The run's seed, or None for an unseeded run.
+        rng: The run's main random source, used when unseeded.
+    """
+    own = rng if seed is None else random.Random(f"{seed}/{name}")
+    return SERIALIZERS[name](own)
+
+
+def main(
+    argv: list[str] | None = None, fixtures: Mapping[str, Path] | None = None
+) -> int:
+    """Run the generator in fixture mode (--seed) or ad-hoc mode (--out).
 
     Args:
         argv: Command-line arguments; defaults to `sys.argv[1:]`.
+        fixtures: Fixture path per format name; defaults to FIXTURES. Tests inject
+            a temporary directory here so the repo's data/ is never touched.
 
     Returns:
-        0 on success, 2 if `--format` is unsupported (nothing is written then).
+        0 on success; 2 for an unsupported `--format`, or if neither `--seed` nor
+        `--out` was given. Nothing is written in either error case.
     """
+    fixtures = FIXTURES if fixtures is None else fixtures
     parser = argparse.ArgumentParser(
-        description="Regenerate data/sample.log and its metadata."
+        description="Regenerate the sample fixtures (--seed) or write one log (--out)."
     )
     parser.add_argument(
-        "--format", default="comma", help="output format (supported: comma)"
+        "--seed",
+        type=int,
+        help="seed for a reproducible run; alone, regenerates every fixture",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        help="write only this log and <out>.metadata.json; leaves data/ alone",
+    )
+    parser.add_argument(
+        "--format",
+        help=(
+            f"output format ({', '.join(SERIALIZERS)}); default comma with --out; "
+            "with --seed alone, limits the fixtures written to this format"
+        ),
     )
     args = parser.parse_args(argv)
 
-    if args.format not in SERIALIZERS:
+    if args.format is not None and args.format not in SERIALIZERS:
         supported = ", ".join(SERIALIZERS)
         print(
             f"unsupported format '{args.format}' (supported: {supported})",
             file=sys.stderr,
         )
         return 2
+    if args.seed is None and args.out is None:
+        print("error: need --seed (fixtures) or --out (ad-hoc file)", file=sys.stderr)
+        return 2
 
-    rng = random.Random()
-    serializer = SERIALIZERS[args.format](rng)
+    rng = random.Random() if args.seed is None else random.Random(args.seed)
     items = plan_items(rng)
-    text = "".join(serializer.serialize(item) + "\n" for item in items)
-    # Every line ends in exactly one newline, so this is the real written line count.
-    line_count = text.count("\n")
-    if line_count != len(items):
-        raise RuntimeError("a serialized line contained a newline")
-    metadata = build_metadata(items, line_count, serializer.name)
-
-    DATA_DIR.mkdir(exist_ok=True)
-    LOG_PATH.write_text(text, encoding="utf-8")
-    METADATA_PATH.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    print(f"wrote {LOG_PATH} ({line_count} lines) and {METADATA_PATH}")
+    if args.out is not None:
+        name = args.format or "comma"
+        write_log(args.out, items, _serializer(name, args.seed, rng), args.seed)
+        return 0
+    for name in SERIALIZERS:
+        if args.format is None or args.format == name:
+            write_log(fixtures[name], items, _serializer(name, args.seed, rng), args.seed)
     return 0
 
 
