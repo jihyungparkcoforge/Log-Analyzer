@@ -7,6 +7,7 @@ from log_analyzer.detection import (
     RepeatedMessageDetector,
     SpikeDetector,
 )
+from log_analyzer.detection.summary import LLMSummarizer
 from log_analyzer.parsing import LogParser
 from log_analyzer.reporting import format_report
 from log_analyzer.reporting.cli import main
@@ -109,3 +110,61 @@ def test_real_spike_finding_renders_with_counts():
     assert "Started: 2026-10-19 15:30:00" in report
     assert "Count:   50 errors" in report
     assert "Count:   50 occurrences" in report
+
+
+def test_json_flag_saves_report_matching_text(capsys, tmp_path):
+    out_file = tmp_path / "report.json"
+    assert main([str(SAMPLE), "--json", str(out_file)]) == 0
+    text = capsys.readouterr().out
+    report = json.loads(out_file.read_text())
+    assert f"Findings: {report['finding_count']}" in text
+    assert report["finding_count"] == len(report["findings"])
+    assert report["log_file"] == str(SAMPLE)
+    assert report["summary"] is None
+    for number, finding in enumerate(report["findings"], start=1):
+        started = datetime.fromisoformat(finding["started_at"])
+        assert f"{number}. [{finding['severity'].upper()}]" in text
+        assert f"Started: {started:%Y-%m-%d %H:%M:%S}" in text
+
+
+def test_json_unwritable_path_exits_nonzero(capsys, tmp_path):
+    target = tmp_path / "missing-dir" / "report.json"
+    assert main([str(SAMPLE), "--json", str(target)]) == 2
+    assert "cannot write" in capsys.readouterr().err
+
+
+def test_summary_flag_appends_llm_summary(capsys, tmp_path, monkeypatch):
+    sent = []
+
+    def fake_request(payload):
+        sent.append(payload)
+        return {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Fake summary."}],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(LLMSummarizer, "_request", staticmethod(fake_request))
+    out_file = tmp_path / "report.json"
+    argv = [str(SAMPLE), "--summary", "--model", "test-model", "--json", str(out_file)]
+    assert main(argv) == 0
+    out = capsys.readouterr().out
+    assert out.index("LOG ANALYSIS REPORT") < out.index(
+        "LLM SUMMARY (model: test-model)"
+    )
+    assert "Fake summary." in out
+    assert sent[0]["model"] == "test-model"
+    assert json.loads(out_file.read_text())["summary"] == "Fake summary."
+
+
+def test_summary_without_api_key_still_prints_report(capsys, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert main([str(SAMPLE), "--summary"]) == 1
+    captured = capsys.readouterr()
+    assert "LOG ANALYSIS REPORT" in captured.out
+    assert "LLM SUMMARY" not in captured.out
+    assert "summary failed: Set OPENAI_API_KEY" in captured.err
