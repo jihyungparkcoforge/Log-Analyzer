@@ -8,12 +8,10 @@ Two modes:
 
     # Ad-hoc mode: one file at --out plus <out>.metadata.json; never touches data/.
     # --seed is optional (reproducible if given); --format defaults to comma.
-    uv run python scripts/generate_logs.py --out /tmp/foo.log [--format comma] [--seed 7]
+    uv run python scripts/generate_logs.py --out /tmp/foo.log [--format comma|json] [--seed 7]
 
 With --seed and --out together, ad-hoc wins: only --out is written. With neither,
-the script exits 2 instead of overwriting the fixtures. FIXTURES already reserves
-a slot per planned format; formats missing from SERIALIZERS are skipped, so
-registering a new serializer is enough for fixture mode to write its file too.
+the script exits 2 instead of overwriting the fixtures.
 
 The planted incident is built by construction and always fires both detectors, and
 metadata is computed from the lines actually written. Commit the fixtures together.
@@ -32,8 +30,8 @@ from typing import Protocol
 
 # Output locations, resolved from this file so the script works from any cwd.
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-# Fixture-mode path per format name. "json" is reserved for a serializer that is
-# registered later; until it is in SERIALIZERS, fixture mode skips it.
+# Fixture-mode path per format name. Fixture mode writes every key that is also
+# in SERIALIZERS; unregistered names are skipped.
 FIXTURES = {
     "comma": DATA_DIR / "sample.log",
     "json": DATA_DIR / "sample.jsonl",
@@ -283,7 +281,106 @@ class CommaSerializer:
         raise ValueError(f"unknown malformed kind {spec.kind!r}")
 
 
-SERIALIZERS = {"comma": CommaSerializer}
+class JsonSerializer:
+    """JSON Lines: one compact `{"ts","level","service","message"}` object per line.
+
+    `json.dumps` escapes quotes, commas and newlines, so every event stays on one
+    physical line. Malformed kinds are broken for JsonStrategy specifically.
+    """
+
+    name = "json"
+    KEYS = ("ts", "level", "service", "message")
+
+    def __init__(self, rng: random.Random) -> None:
+        """
+        Args:
+            rng: The run's random source, used for corruptions that need randomness.
+        """
+        self._rng = rng
+
+    def serialize(self, item: Item) -> str:
+        """Format an event as a JSON line, or corrupt a malformed spec.
+
+        Args:
+            item: A valid Event, or a Malformed spec.
+
+        Returns:
+            A single-line string without its trailing newline.
+        """
+        if isinstance(item, Event):
+            return self._dump(self._record(item))
+        return self._corrupt(item)
+
+    @staticmethod
+    def _dump(record: dict) -> str:
+        """Encode a record compactly on one line (no spaces, no raw newlines)."""
+        return json.dumps(record, separators=(",", ":"))
+
+    def _record(self, event: Event) -> dict:
+        """Build the JSON object for a valid event, keys in a fixed order."""
+        return dict(
+            zip(
+                self.KEYS,
+                (
+                    CommaSerializer._stamp(event.timestamp),
+                    event.level,
+                    event.service,
+                    event.message,
+                ),
+            )
+        )
+
+    def _corrupt(self, spec: Malformed) -> str:
+        """Build a line of the requested kind that JsonStrategy must reject.
+
+        Args:
+            spec: Which kind of breakage to apply, and the event to base it on.
+
+        Returns:
+            The broken line, which never parses as a valid entry.
+
+        Raises:
+            ValueError: If `spec.kind` is not in MALFORMED_KINDS.
+        """
+        rng = self._rng
+        record = self._record(spec.base)
+        if spec.kind == "bad_timestamp":
+            clock = record["ts"].split(" ")[1]
+            record["ts"] = rng.choice(
+                [
+                    f"20XX-10-19 {clock}",
+                    f"2026-13-45 {clock}",
+                    f"2026-10-19T{clock}",
+                    f"19/10/2026 {clock}",
+                ]
+            )
+            return self._dump(record)
+        if spec.kind == "unknown_level":
+            record["level"] = rng.choice(["FATAL", "FATAL", "CRITICAL", "DEBUG"])
+            return self._dump(record)
+        if spec.kind == "missing_fields":
+            del record[rng.choice(self.KEYS)]
+            return self._dump(record)
+        if spec.kind == "truncated":
+            # Drop at least the closing brace, so the object can never be complete.
+            line = self._dump(record)
+            return line[: rng.randint(1, len(line) - 1)]
+        if spec.kind == "garbage":
+            # No braces, so the text cannot be mistaken for a JSON object.
+            alphabet = "".join(
+                c
+                for c in string.ascii_letters + string.digits + string.punctuation
+                if c not in "{},"
+            )
+            return "".join(rng.choice(alphabet) for _ in range(rng.randint(20, 60)))
+        if spec.kind == "blank":
+            return rng.choice(["", "", "   ", "\t"])
+        if spec.kind == "stack_trace":
+            return rng.choice(STACK_LINES)
+        raise ValueError(f"unknown malformed kind {spec.kind!r}")
+
+
+SERIALIZERS = {"comma": CommaSerializer, "json": JsonSerializer}
 
 
 class _Fill:

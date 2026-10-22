@@ -12,7 +12,13 @@ from pathlib import Path
 import pytest
 
 from log_analyzer.models import LogEntry, MalformedLine, ParseResult
-from log_analyzer.parsing import CommaSeparatedStrategy, LogParser, ParseError
+from log_analyzer.parsing import (
+    STRATEGIES,
+    CommaSeparatedStrategy,
+    LogParser,
+    ParseError,
+)
+from log_analyzer.reporting.cli import resolve_format
 
 DATA = Path(__file__).parent.parent / "data"
 SAMPLE = DATA / "sample.log"
@@ -221,9 +227,22 @@ def test_models_are_immutable():
 def test_sample_log_matches_generator_metadata():
     """Parsing data/sample.log reconciles with the totals the generator recorded."""
     meta = json.loads(SAMPLE_META.read_text())
-    result = LogParser().parse_file(SAMPLE)
+    strategy = STRATEGIES[resolve_format(SAMPLE)]()
+    result = LogParser(strategy=strategy).parse_file(SAMPLE)
     assert len(result.entries) + result.malformed_count == meta["total_lines"]
     assert result.malformed_count == meta["malformed_lines"]
     assert sum(result.malformed_reasons.values()) == result.malformed_count
     assert len(result.malformed_samples) == 20
     assert all(e.level in {"INFO", "WARNING", "ERROR"} for e in result.entries)
+
+
+def test_sample_jsonl_matches_generator_metadata():
+    """Parsing data/sample.jsonl reconciles with its sibling metadata."""
+    path = DATA / "sample.jsonl"
+    meta = json.loads(Path(f"{path}.metadata.json").read_text())
+    strategy = STRATEGIES[resolve_format(path)]()
+    result = LogParser(strategy=strategy).parse_file(path)
+    assert meta["format"] == "json"
+    assert len(result.entries) + result.malformed_count == meta["total_lines"]
+    assert result.malformed_count == meta["malformed_lines"]
+    assert len(result.malformed_samples) == 20

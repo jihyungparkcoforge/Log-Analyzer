@@ -12,10 +12,30 @@ from log_analyzer.detection import (
     SpikeDetector,
 )
 from log_analyzer.detection.summary import LLMSummarizer, build_summary_context
-from log_analyzer.parsing import LogParser
+from log_analyzer.parsing import STRATEGIES, LineParseStrategy, LogParser
 from log_analyzer.reporting.reporter import RULE, format_report, report_to_dict
 
 DEFAULT_MODEL = "gpt-6-luna"
+DEFAULT_FORMAT = "comma"
+
+
+def resolve_format(path: str | Path, explicit: str | None = None) -> str:
+    """Pick the log format name: `--format`, else sibling metadata, else comma.
+
+    The sibling file is `<log file>.metadata.json`; it is used only if it holds
+    a readable JSON object with a "format" key. The log's contents are never sniffed.
+    The returned name is not validated; see `STRATEGIES`.
+    """
+    if explicit is not None:
+        return explicit
+    metadata_path = Path(f"{path}.metadata.json")
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return DEFAULT_FORMAT
+    if isinstance(metadata, dict) and "format" in metadata:
+        return str(metadata["format"])
+    return DEFAULT_FORMAT
 
 
 def run_detectors(
@@ -48,11 +68,12 @@ def run_detectors(
     return data, findings, notes
 
 
-def analyze(path: str | Path) -> str:
+def analyze(path: str | Path, strategy: LineParseStrategy | None = None) -> str:
     """Parse a log file, run both detectors, and return the report text.
 
     Args:
         path: Log file to analyze.
+        strategy: How to parse each line. Defaults to the parser's default (comma).
 
     Returns:
         The plain-text report from format_report.
@@ -60,7 +81,8 @@ def analyze(path: str | Path) -> str:
     Raises:
         OSError: If the file cannot be opened or read.
     """
-    _, findings, notes = run_detectors(path)
+    log_parser = LogParser(strategy=strategy) if strategy is not None else None
+    _, findings, notes = run_detectors(path, log_parser)
     return format_report(findings, log_file=path, notes=notes)
 
 
@@ -76,13 +98,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     Returns:
         Exit code: 0 on success (with or without findings), 1 if --summary failed
         (the report is still printed and any JSON still saved), 2 for a missing or
-        unreadable log file or an unwritable --json path.
+        unreadable log file, an unknown --format, or an unwritable --json path.
     """
     parser = argparse.ArgumentParser(
         prog="log-analyzer",
         description="Analyze a log file and print a severity-sorted report.",
     )
     parser.add_argument("log_file", help="path to a log file")
+    parser.add_argument(
+        "--format",
+        help=(
+            f"log format ({', '.join(STRATEGIES)}); default: the 'format' in "
+            f"<log file>.metadata.json if present, else {DEFAULT_FORMAT}"
+        ),
+    )
     parser.add_argument(
         "--summary",
         action="store_true",
@@ -105,8 +134,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not path.is_file():
         print(f"error: log file not found: {path}", file=sys.stderr)
         return 2
+    format_name = resolve_format(path, args.format)
+    if format_name not in STRATEGIES:
+        supported = ", ".join(STRATEGIES)
+        print(
+            f"error: unsupported format '{format_name}' (supported: {supported})",
+            file=sys.stderr,
+        )
+        return 2
     try:
-        data, findings, notes = run_detectors(args.log_file)
+        data, findings, notes = run_detectors(
+            args.log_file, LogParser(strategy=STRATEGIES[format_name]())
+        )
     except OSError as error:
         print(f"error: cannot read {path}: {error.strerror or error}", file=sys.stderr)
         return 2

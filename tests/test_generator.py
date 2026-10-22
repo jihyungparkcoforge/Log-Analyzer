@@ -49,9 +49,9 @@ def read(path: Path) -> tuple[bytes, dict]:
 # --- Reserved slots ---------------------------------------------------------
 
 
-def test_serializers_are_comma_only_and_fixtures_reserve_json():
-    """Only comma is registered today, but FIXTURES already names the json slot."""
-    assert list(gen.SERIALIZERS) == ["comma"]
+def test_serializers_and_fixtures_cover_comma_and_json():
+    """Comma and JSON are registered, each with a fixture path."""
+    assert list(gen.SERIALIZERS) == ["comma", "json"]
     assert gen.FIXTURES["comma"].name == "sample.log"
     assert gen.FIXTURES["json"].name == "sample.jsonl"
     assert set(gen.SERIALIZERS) <= set(gen.FIXTURES)
@@ -61,27 +61,25 @@ def test_serializers_are_comma_only_and_fixtures_reserve_json():
 
 
 def test_seed_writes_fixture_and_sibling_metadata(fixtures):
-    """--seed alone writes the comma fixture and its metadata, and skips unregistered json."""
+    """--seed alone writes every registered fixture and its metadata from one plan."""
     assert gen.main(["--seed", "42"], fixtures=fixtures) == 0
     log, metadata = read(fixtures["comma"])
-    assert log
+    json_log, json_metadata = read(fixtures["json"])
+    assert log and json_log
     assert metadata["format"] == "comma"
-    assert metadata["seed"] == 42
-    assert not fixtures["json"].exists()
-    assert not Path(f"{fixtures['json']}.metadata.json").exists()
+    assert json_metadata["format"] == "json"
+    assert metadata["seed"] == json_metadata["seed"] == 42
+    assert json_metadata["spike"] == metadata["spike"]
+    assert json_metadata["total_lines"] == metadata["total_lines"]
 
 
 def test_same_seed_gives_identical_bytes(fixtures, tmp_path):
-    """Running the same seed twice reproduces the log and the metadata exactly."""
+    """Running the same seed twice reproduces each log and its metadata exactly."""
     gen.main(["--seed", "42"], fixtures=fixtures)
-    first = read(fixtures["comma"])
     other = {name: tmp_path / "again" / path.name for name, path in fixtures.items()}
     gen.main(["--seed", "42"], fixtures=other)
-    assert read(other["comma"]) == first
-    assert (
-        Path(f"{other['comma']}.metadata.json").read_bytes()
-        == Path(f"{fixtures['comma']}.metadata.json").read_bytes()
-    )
+    for name in gen.SERIALIZERS:
+        assert read(other[name]) == read(fixtures[name])
 
 
 def test_different_seeds_differ(fixtures, tmp_path):
@@ -190,6 +188,16 @@ def test_out_default_format_is_comma(tmp_path):
     assert read(a) == read(b)
 
 
+def test_out_format_json_writes_json_lines(tmp_path):
+    """--out --format json writes JSON Lines and records format json."""
+    out = tmp_path / "foo.jsonl"
+    assert gen.main(["--out", str(out), "--format", "json", "--seed", "5"]) == 0
+    _, metadata = read(out)
+    assert metadata["format"] == "json"
+    first = next(line for line in out.read_text().splitlines() if line.strip())
+    assert first.startswith("{")
+
+
 # --- Errors -----------------------------------------------------------------
 
 
@@ -210,10 +218,12 @@ def test_format_alone_still_needs_seed_or_out(fixtures):
     "extra", [["--seed", "1"], ["--out", "OUT"], ["--out", "OUT", "--seed", "1"]]
 )
 def test_unknown_format_exits_2_and_writes_nothing(extra, fixtures, tmp_path, capsys):
-    """An unsupported --format, including json before it is registered, writes nothing."""
+    """An unsupported --format writes nothing."""
     argv = [str(tmp_path / "x.log") if a == "OUT" else a for a in extra]
-    assert gen.main([*argv, "--format", "json"], fixtures=fixtures) == 2
-    assert "unsupported format 'json' (supported: comma)" in capsys.readouterr().err
+    assert gen.main([*argv, "--format", "xml"], fixtures=fixtures) == 2
+    assert (
+        "unsupported format 'xml' (supported: comma, json)" in capsys.readouterr().err
+    )
     assert not (tmp_path / "x.log").exists()
     assert not fixtures["comma"].parent.exists()
 
