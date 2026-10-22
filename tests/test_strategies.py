@@ -5,6 +5,7 @@ run against each entry in STRATEGY_CASES, so supporting a new log format means
 adding one StrategyCase below (plus format-specific tests, if any) and nothing else.
 """
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,7 +13,12 @@ from datetime import datetime
 import pytest
 
 from log_analyzer.models import LogEntry
-from log_analyzer.parsing import CommaSeparatedStrategy, LogParser, ParseError
+from log_analyzer.parsing import (
+    CommaSeparatedStrategy,
+    JsonStrategy,
+    LogParser,
+    ParseError,
+)
 from log_analyzer.parsing.strategy import LineParseStrategy
 
 
@@ -56,8 +62,43 @@ COMMA_CASE = StrategyCase(
     ),
 )
 
+JSON_CASE = StrategyCase(
+    name="json",
+    factory=JsonStrategy,
+    good_line=(
+        '{"ts":"2026-10-19 14:00:05","level":"INFO","service":"order-service",'
+        '"message":"Order shipped order_id=89131"}'
+    ),
+    expected=COMMA_CASE.expected,
+    bad_lines=(
+        ("", "blank_line"),
+        ("not json at all", "invalid_json"),
+        ('["ts","level","service","message"]', "invalid_json"),
+        (
+            '{"ts":"2026-10-19 14:00:05","level":"INFO","service":"svc"}',
+            "missing_fields",
+        ),
+        (
+            '{"ts":"2026-13-45 14:00:05","level":"INFO","service":"svc","message":"m"}',
+            "bad_timestamp",
+        ),
+        (
+            '{"ts":"2026-10-19 14:00:05","level":"FATAL","service":"svc","message":"m"}',
+            "unknown_level",
+        ),
+        (
+            '{"ts":"2026-10-19 14:00:05","level":"INFO","service":"","message":"m"}',
+            "empty_service",
+        ),
+        (
+            '{"ts":"2026-10-19 14:00:05","level":"INFO","service":"svc","message":""}',
+            "empty_message",
+        ),
+    ),
+)
+
 # Register new strategies here; every contract test below picks them up.
-STRATEGY_CASES = [COMMA_CASE]
+STRATEGY_CASES = [COMMA_CASE, JSON_CASE]
 
 # Inputs no strategy may crash on: they must parse or raise ParseError.
 HOSTILE_LINES = [
@@ -73,6 +114,17 @@ HOSTILE_LINES = [
     "x" * 100_000,
     "\tat com.example.Foo.bar(Foo.java:42)",
     "Traceback (most recent call last):",
+    "{",
+    "{}",
+    "[" * 100_000,
+    "null",
+    "NaN",
+    "1e999999",
+    "9" * 10_000,
+    '{"ts":null,"level":null,"service":null,"message":null}',
+    '{"ts":1,"level":2,"service":3,"message":4}',
+    '{"ts":"2026-10-19 14:00:05","level":"INFO","service":"s","message":{"a":[1]}}',
+    '{"ts":"\u0000","level":"\ud800","service":"s","message":"m"}',
 ]
 
 all_cases = pytest.mark.parametrize(
@@ -253,3 +305,107 @@ def test_comma_checks_fields_in_documented_order():
     with pytest.raises(ParseError) as excinfo:
         CommaSeparatedStrategy().parse_line("nope,DEBUG,,", 1)
     assert excinfo.value.reason == "bad_timestamp"
+
+
+# --- Format-specific: JsonStrategy ------------------------------------------
+
+
+def json_line(**overrides) -> str:
+    """Build a JSON log line from a valid record with some fields overridden."""
+    record = {
+        "ts": "2026-10-19 14:00:05",
+        "level": "ERROR",
+        "service": "svc",
+        "message": "msg",
+        **overrides,
+    }
+    return json.dumps(record)
+
+
+def test_json_message_may_contain_quotes_commas_and_newlines():
+    """json.dumps escaping keeps awkward messages on one line and round-trips them."""
+    message = 'said "hi", then {left}, \\ and a\nnewline'
+    line = json_line(message=message)
+    assert "\n" not in line
+    assert JsonStrategy().parse_line(line, 1).message == message
+
+
+def test_json_extra_keys_are_ignored():
+    """Unknown keys do not affect parsing."""
+    entry = JsonStrategy().parse_line(json_line(trace_id="abc", extra={"a": 1}), 1)
+    assert (entry.level, entry.service, entry.message) == ("ERROR", "svc", "msg")
+
+
+def test_json_strips_whitespace_around_string_values_and_the_line():
+    """Padding inside values and around the whole line is removed."""
+    line = (
+        "  "
+        + json_line(ts=" 2026-10-19 14:00:05 ", service=" svc ", message=" m ")
+        + "  "
+    )
+    entry = JsonStrategy().parse_line(line, 1)
+    assert (entry.service, entry.message) == ("svc", "m")
+    assert entry.timestamp == datetime(2026, 10, 19, 14, 0, 5)
+
+
+def test_json_key_order_and_spacing_do_not_matter():
+    """A pretty-printed object with shuffled keys parses the same as the compact form."""
+    line = (
+        '{ "message": "msg", "service": "svc", "level": "ERROR", '
+        '"ts": "2026-10-19 14:00:05" }'
+    )
+    assert JsonStrategy().parse_line(line, 1) == JsonStrategy().parse_line(
+        json_line(), 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("line", "reason"),
+    [
+        ("   \t", "blank_line"),
+        ("{", "invalid_json"),
+        ("{}", "missing_fields"),
+        ("null", "invalid_json"),
+        ('"just a string"', "invalid_json"),
+        ("42", "invalid_json"),
+        ("[" * 100_000, "invalid_json"),
+        (json.dumps({"ts": "2026-10-19 14:00:05"}), "missing_fields"),
+        (json_line(ts="2026-10-19T14:00:05"), "bad_timestamp"),
+        (json_line(ts=20261019), "bad_timestamp"),
+        (json_line(ts=None), "bad_timestamp"),
+        (json_line(level="info"), "unknown_level"),
+        (json_line(level=5), "unknown_level"),
+        (json_line(service="   "), "empty_service"),
+        (json_line(service=None), "empty_service"),
+        (json_line(message="   "), "empty_message"),
+        (json_line(message={"nested": 1}), "empty_message"),
+    ],
+)
+def test_json_rejects_with_reason(line, reason):
+    """Each malformed JSON variant is tagged with the expected reason."""
+    with pytest.raises(ParseError) as excinfo:
+        JsonStrategy().parse_line(line, 1)
+    assert excinfo.value.reason == reason
+
+
+def test_json_checks_in_documented_order():
+    """Missing keys are reported before value problems, and ts before level."""
+    with pytest.raises(ParseError) as excinfo:
+        JsonStrategy().parse_line('{"ts":"nope","level":"DEBUG"}', 1)
+    assert excinfo.value.reason == "missing_fields"
+    with pytest.raises(ParseError) as excinfo:
+        JsonStrategy().parse_line(json_line(ts="nope", level="DEBUG"), 1)
+    assert excinfo.value.reason == "bad_timestamp"
+
+
+def test_json_and_comma_agree_on_the_same_event():
+    """Both formats produce an identical LogEntry for the same event."""
+    comma = CommaSeparatedStrategy().parse_line(COMMA_CASE.good_line, 7)
+    assert comma == JsonStrategy().parse_line(JSON_CASE.good_line, 7)
+
+
+def test_json_default_parser_format_is_still_comma():
+    """LogParser keeps comma as its default; JSON is opt-in via the strategy."""
+    result = LogParser().parse_lines([JSON_CASE.good_line])
+    assert result.entries == ()
+    assert result.malformed_count == 1

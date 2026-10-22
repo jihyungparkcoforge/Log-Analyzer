@@ -8,9 +8,9 @@ from log_analyzer.detection import (
     SpikeDetector,
 )
 from log_analyzer.detection.summary import LLMSummarizer
-from log_analyzer.parsing import LogParser
+from log_analyzer.parsing import STRATEGIES, LogParser
 from log_analyzer.reporting import format_report
-from log_analyzer.reporting.cli import main
+from log_analyzer.reporting.cli import main, resolve_format
 
 DATA = Path(__file__).parent.parent / "data"
 SAMPLE = DATA / "sample.log"
@@ -62,7 +62,8 @@ def test_planted_spike_appears_in_sample_report(capsys):
     spike_start = datetime.fromisoformat(spike["start"])
     spike_end = datetime.fromisoformat(spike["end"])
 
-    entries = LogParser().parse_file(SAMPLE).entries
+    strategy = STRATEGIES[resolve_format(SAMPLE)]()
+    entries = LogParser(strategy=strategy).parse_file(SAMPLE).entries
     data = DetectionInput(entries)
     findings = RepeatedMessageDetector().detect(data) + SpikeDetector().detect(data)
     spikes = [f for f in findings if f.detector == "spike"]
@@ -168,3 +169,117 @@ def test_summary_without_api_key_still_prints_report(capsys, monkeypatch):
     assert "LOG ANALYSIS REPORT" in captured.out
     assert "LLM SUMMARY" not in captured.out
     assert "summary failed: Set OPENAI_API_KEY" in captured.err
+
+
+def write_json_log(path: Path) -> None:
+    """Write a small JSON Lines log with a burst of identical errors."""
+    lines = [
+        json.dumps(
+            {
+                "ts": f"2026-10-19 15:30:{i:02}",
+                "level": "ERROR",
+                "service": "payment-service",
+                "message": "Connection timeout",
+            }
+        )
+        for i in range(50)
+    ]
+    path.write_text("\n".join(lines) + "\n")
+
+
+def test_format_json_flag_parses_and_reports(capsys, tmp_path):
+    """--format json reads a JSON Lines file and reports the findings."""
+    log = tmp_path / "burst.jsonl"
+    write_json_log(log)
+    assert main(["--format", "json", str(log)]) == 0
+    out = capsys.readouterr().out
+    assert "[CRITICAL] Error spike" in out
+    assert "Count:   50 errors" in out
+    assert "50 entries parsed" in out
+    assert "malformed" not in out
+
+
+def test_json_file_without_flag_uses_comma_and_skips_every_line(capsys, tmp_path):
+    """With no flag and no metadata the default is comma, so JSON lines are malformed."""
+    log = tmp_path / "burst.jsonl"
+    write_json_log(log)
+    assert main([str(log)]) == 0
+    out = capsys.readouterr().out
+    assert "0 entries parsed" in out
+    assert "50 malformed lines skipped" in out
+
+
+def test_sibling_metadata_format_selects_json(capsys, tmp_path):
+    """Without --format, `<log>.metadata.json` with "format": "json" picks JSON."""
+    log = tmp_path / "burst.log"
+    write_json_log(log)
+    (tmp_path / "burst.log.metadata.json").write_text(json.dumps({"format": "json"}))
+    assert main([str(log)]) == 0
+    out = capsys.readouterr().out
+    assert "50 entries parsed" in out
+    assert "[CRITICAL] Error spike" in out
+
+
+def test_format_flag_overrides_metadata(capsys, tmp_path):
+    """--format wins over the metadata's format."""
+    log = tmp_path / "burst.log"
+    write_json_log(log)
+    (tmp_path / "burst.log.metadata.json").write_text(json.dumps({"format": "json"}))
+    assert main(["--format", "comma", str(log)]) == 0
+    assert "0 entries parsed" in capsys.readouterr().out
+
+
+def test_metadata_without_format_key_defaults_to_comma(capsys, tmp_path):
+    """Metadata lacking "format" (or unreadable) falls back to comma."""
+    log = tmp_path / "quiet.log"
+    log.write_text("2026-10-19 14:00:00,INFO,payment-service,ok\n")
+    meta = tmp_path / "quiet.log.metadata.json"
+    for content in ('{"seed": 1}', "not json", "[]"):
+        meta.write_text(content)
+        assert main([str(log)]) == 0
+        assert "1 entries parsed" in capsys.readouterr().out
+
+
+def test_unknown_format_flag_exits_2_without_analyzing(capsys, tmp_path):
+    """An unsupported --format is an error on stderr and prints no report."""
+    log = tmp_path / "quiet.log"
+    log.write_text("2026-10-19 14:00:00,INFO,payment-service,ok\n")
+    assert main(["--format", "xml", str(log)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unsupported format 'xml' (supported: comma, json)" in captured.err
+
+
+def test_unknown_metadata_format_exits_2(capsys, tmp_path):
+    """An unsupported format named by metadata is rejected the same way."""
+    log = tmp_path / "quiet.log"
+    log.write_text("2026-10-19 14:00:00,INFO,payment-service,ok\n")
+    (tmp_path / "quiet.log.metadata.json").write_text(json.dumps({"format": "syslog"}))
+    assert main([str(log)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unsupported format 'syslog'" in captured.err
+
+
+def test_resolve_format_precedence(tmp_path):
+    """Explicit flag beats metadata, which beats the comma default."""
+    log = tmp_path / "a.log"
+    log.write_text("")
+    assert resolve_format(log) == "comma"
+    (tmp_path / "a.log.metadata.json").write_text(json.dumps({"format": "json"}))
+    assert resolve_format(log) == "json"
+    assert resolve_format(log, "comma") == "comma"
+
+
+def test_committed_jsonl_sample_matches_comma_findings(capsys):
+    """data/sample.jsonl is the same incident; sibling metadata selects JSON."""
+    jsonl = DATA / "sample.jsonl"
+    spike = json.loads((DATA / "sample.jsonl.metadata.json").read_text())["spike"]
+    comma_spike = json.loads((DATA / "sample.log.metadata.json").read_text())["spike"]
+    assert spike["window_error_counts"] == comma_spike["window_error_counts"]
+    assert resolve_format(jsonl) == "json"
+    assert main([str(jsonl)]) == 0
+    out = capsys.readouterr().out
+    assert "[CRITICAL] Error spike" in out
+    for count in spike["window_error_counts"]:
+        assert f"Count:   {count} errors" in out
