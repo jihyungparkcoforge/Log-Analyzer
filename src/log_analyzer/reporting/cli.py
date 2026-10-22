@@ -5,6 +5,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from dotenv import dotenv_values
+
 from log_analyzer.detection import (
     DetectionInput,
     Finding,
@@ -100,6 +102,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         (the report is still printed and any JSON still saved), 2 for a missing or
         unreadable log file, an unknown --format, or an unwritable --json path.
     """
+    # Read the working directory's .env before resolving the default model.
+    # Local LLM settings override stale exports; unrelated variables are untouched.
+    settings = dotenv_values(Path.cwd() / ".env")
+    for name in ("OPENAI_API_KEY", "ENDPOINT", "OPENAI_MODEL"):
+        if settings.get(name) is not None:
+            os.environ[name] = settings[name]
+
     parser = argparse.ArgumentParser(
         prog="log-analyzer",
         description="Analyze a log file and print a severity-sorted report.",
