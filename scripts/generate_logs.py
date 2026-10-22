@@ -576,7 +576,9 @@ def main(
         return 0
     for name in SERIALIZERS:
         if args.format is None or args.format == name:
-            write_log(fixtures[name], items, _serializer(name, args.seed, rng), args.seed)
+            write_log(
+                fixtures[name], items, _serializer(name, args.seed, rng), args.seed
+            )
     return 0
 
 

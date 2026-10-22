@@ -11,7 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from log_analyzer.detection import DetectionInput, RepeatedMessageDetector, SpikeDetector
+from log_analyzer.detection import (
+    DetectionInput,
+    RepeatedMessageDetector,
+    SpikeDetector,
+)
 from log_analyzer.parsing import LogParser
 
 SCRIPT = Path(__file__).parent.parent / "scripts" / "generate_logs.py"
@@ -31,7 +35,10 @@ gen = load_generator()
 @pytest.fixture
 def fixtures(tmp_path):
     """A FIXTURES-shaped mapping rooted in tmp_path, mirroring the real one."""
-    return {"comma": tmp_path / "fx" / "sample.log", "json": tmp_path / "fx" / "sample.jsonl"}
+    return {
+        "comma": tmp_path / "fx" / "sample.log",
+        "json": tmp_path / "fx" / "sample.jsonl",
+    }
 
 
 def read(path: Path) -> tuple[bytes, dict]:
@@ -71,9 +78,10 @@ def test_same_seed_gives_identical_bytes(fixtures, tmp_path):
     other = {name: tmp_path / "again" / path.name for name, path in fixtures.items()}
     gen.main(["--seed", "42"], fixtures=other)
     assert read(other["comma"]) == first
-    assert Path(f"{other['comma']}.metadata.json").read_bytes() == Path(
-        f"{fixtures['comma']}.metadata.json"
-    ).read_bytes()
+    assert (
+        Path(f"{other['comma']}.metadata.json").read_bytes()
+        == Path(f"{fixtures['comma']}.metadata.json").read_bytes()
+    )
 
 
 def test_different_seeds_differ(fixtures, tmp_path):
@@ -103,7 +111,9 @@ def test_fixture_mode_writes_every_registered_serializer(fixtures, monkeypatch):
     assert json_meta["total_lines"] == comma_meta["total_lines"]
 
 
-def test_comma_bytes_do_not_depend_on_other_registered_formats(fixtures, tmp_path, monkeypatch):
+def test_comma_bytes_do_not_depend_on_other_registered_formats(
+    fixtures, tmp_path, monkeypatch
+):
     """Adding a serializer later must not change the committed comma fixture."""
     gen.main(["--seed", "42"], fixtures=fixtures)
     alone = read(fixtures["comma"])
@@ -196,7 +206,9 @@ def test_format_alone_still_needs_seed_or_out(fixtures):
     assert not fixtures["comma"].parent.exists()
 
 
-@pytest.mark.parametrize("extra", [["--seed", "1"], ["--out", "OUT"], ["--out", "OUT", "--seed", "1"]])
+@pytest.mark.parametrize(
+    "extra", [["--seed", "1"], ["--out", "OUT"], ["--out", "OUT", "--seed", "1"]]
+)
 def test_unknown_format_exits_2_and_writes_nothing(extra, fixtures, tmp_path, capsys):
     """An unsupported --format, including json before it is registered, writes nothing."""
     argv = [str(tmp_path / "x.log") if a == "OUT" else a for a in extra]
